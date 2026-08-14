@@ -1,0 +1,10 @@
+{
+  "card":         {"lx": 275,  "ly": 336},
+  "export":       {"lx": 1136, "ly": 18},
+  "confirm":      {"lx": 509,  "ly": 635},
+  "close_done":   {"lx": 580,  "ly": 396},
+  "close_editor": {"lx": 1263, "ly": 21},
+  "search_btn":   {"lx": 799,  "ly": 260},
+  "search_box":   {"lx": 660,  "ly": 262},
+  "result_card":  {"lx": 277,  "ly": 342}
+}

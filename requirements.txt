@@ -1,0 +1,13 @@
+# AutoCut / 剪映自动化与 AI 视频工作台依赖清单
+flask>=3.0.0
+requests>=2.31.0
+openai>=1.0.0
+frida>=16.0.0
+gradio>=4.0.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+psutil>=5.9.0
+imageio>=2.30.0
+oss2>=2.18.0
+json5>=0.9.14
+mcp>=1.0.0

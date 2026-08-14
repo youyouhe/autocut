@@ -1,0 +1,58 @@
+# 情感语录视频模板
+# 用法: python template_engine.py render -t templates/emotional_quotes.yaml -v '{"title":"旅行的意义","sentences":["不是所有的路都有终点","最美的风景在路上","出发本身就是到达"],"bg_video":"https://example.com/travel.mp4"}'
+name: 情感语录
+description: 背景视频 + 标题 + 多条语录文字 + 背景音乐
+canvas:
+  width: 1080
+  height: 1920
+
+scenes:
+  # 背景视频 (全程)
+  - type: video
+    description: 背景视频
+    source: "{{bg_video}}"
+    source_start: 0
+    duration: 30
+    target_start: 0
+    volume: 0.2
+
+  # 标题 (0-5秒)
+  - type: text
+    description: 标题
+    content: "{{title}}"
+    start: 0
+    duration: 5
+    style:
+      font_size: 14
+      font_color: "#FFFFFF"
+      shadow_enabled: true
+      background_color: "#000000"
+      background_alpha: 0.5
+    position:
+      x: 0
+      y: 0.8
+    track_name: title
+
+  # 语录文字 (循环，每条5秒，左右交替)
+  - type: subtitle
+    description: 语录列表
+    track_name: quotes
+    style:
+      font_size: 8
+      font_color: "#FFFFFF"
+    items:
+      - text: "{{quote_1}}"
+        start: 5
+        end: 10
+      - text: "{{quote_2}}"
+        start: 10
+        end: 15
+      - text: "{{quote_3}}"
+        start: 15
+        end: 20
+      - text: "{{quote_4}}"
+        start: 20
+        end: 25
+      - text: "{{quote_5}}"
+        start: 25
+        end: 30

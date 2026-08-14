@@ -1,0 +1,92 @@
+# 产品介绍视频模板
+# 用法: python template_engine.py render -t templates/product_intro.yaml -v '{"product_name":"AI助手","demo_video":"https://example.com/demo.mp4","bgm_url":"https://example.com/bgm.mp3"}'
+name: 产品介绍
+description: 开场标题 → 演示视频 → 特点文字 → 行动号召
+canvas:
+  width: 1080
+  height: 1920
+
+scenes:
+  # 场景1: 开场标题 (0-3秒)
+  - type: text
+    description: 开场标题
+    content: "{{product_name}}"
+    start: 0
+    duration: 3
+    style:
+      font_size: 15
+      font_color: "#FFD700"
+      shadow_enabled: true
+      background_color: "#000000"
+      background_alpha: 0.6
+    position:
+      x: 0
+      y: 0.7
+    animation:
+      intro: fade_in
+    track_name: title
+
+  # 场景2: 演示视频 (3-13秒)
+  - type: video
+    description: 产品演示
+    source: "{{demo_video}}"
+    source_start: 0
+    duration: 10
+    target_start: 3
+    transition: slide_left
+
+  # 场景3: 特点1 (13-16秒)
+  - type: text
+    description: 特点1
+    content: "{{feature_1}}"
+    start: 13
+    duration: 3
+    style:
+      font_size: 10
+      font_color: "#FFFFFF"
+      background_color: "#1E1E1E"
+      background_alpha: 0.8
+    position:
+      x: 0
+      y: -0.5
+    track_name: feature_1
+
+  # 场景4: 特点2 (16-19秒)
+  - type: text
+    description: 特点2
+    content: "{{feature_2}}"
+    start: 16
+    duration: 3
+    style:
+      font_size: 10
+      font_color: "#FFFFFF"
+      background_color: "#1E1E1E"
+      background_alpha: 0.8
+    position:
+      x: 0
+      y: -0.5
+    track_name: feature_2
+
+  # 场景5: 行动号召 (19-22秒)
+  - type: text
+    description: 行动号召
+    content: "立即体验"
+    start: 19
+    duration: 3
+    style:
+      font_size: 13
+      font_color: "#FF6B6B"
+      shadow_enabled: true
+    position:
+      x: 0
+      y: 0
+    animation:
+      intro: zoom_in
+    track_name: cta
+
+  # 场景6: 背景音乐 (全程)
+  - type: audio
+    description: 背景音乐
+    source: "{{bgm_url}}"
+    start: 0
+    volume: 0.3

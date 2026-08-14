@@ -1,0 +1,79 @@
+# 知识科普短视频模板
+# 用法: python template_engine.py render -t templates/knowledge_short.yaml -v '{"title":"为什么天是蓝的","points":["阳光穿过大气层","蓝色光波短被散射","我们的眼睛看到散射的蓝光"],"bg_video":"https://example.com/sky.mp4","bgm":"https://example.com/calm.mp3"}'
+name: 知识科普
+description: 问题引入 → 逐点讲解（带字幕） → 总结
+canvas:
+  width: 1080
+  height: 1920
+
+scenes:
+  # 背景
+  - type: video
+    description: 背景素材
+    source: "{{bg_video}}"
+    source_start: 0
+    duration: 30
+    target_start: 0
+    volume: 0.15
+
+  # 问题/标题 (0-4秒)
+  - type: text
+    description: 问题引入
+    content: "{{title}}"
+    start: 0
+    duration: 4
+    style:
+      font_size: 12
+      font_color: "#FFD700"
+      shadow_enabled: true
+    position:
+      x: 0
+      y: 0.5
+    animation:
+      intro: fade_in
+    track_name: hook
+
+  # 逐点讲解 (每点5秒，带字幕)
+  - type: subtitle
+    description: 知识点列表
+    track_name: points
+    style:
+      font_size: 9
+      font_color: "#FFFFFF"
+    items:
+      - text: "{{point_1}}"
+        start: 4
+        end: 9
+      - text: "{{point_2}}"
+        start: 9
+        end: 14
+      - text: "{{point_3}}"
+        start: 14
+        end: 19
+      - text: "{{point_4}}"
+        start: 19
+        end: 24
+
+  # 总结 (24-30秒)
+  - type: text
+    description: 总结
+    content: "{{summary}}"
+    start: 24
+    duration: 6
+    style:
+      font_size: 11
+      font_color: "#4ECDC4"
+      shadow_enabled: true
+      background_color: "#000000"
+      background_alpha: 0.4
+    position:
+      x: 0
+      y: -0.6
+    track_name: summary
+
+  # 背景音乐
+  - type: audio
+    description: 轻音乐
+    source: "{{bgm}}"
+    start: 0
+    volume: 0.25

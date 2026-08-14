@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "video-tools": {
+      "command": "python",
+      "args": ["mcp_video_server.py"],
+      "env": {}
+    }
+  }
+}
