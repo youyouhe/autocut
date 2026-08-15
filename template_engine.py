@@ -16,7 +16,7 @@
 #       "demo_video": "https://example.com/demo.mp4",
 #   })
 
-import os, sys, json, time, requests
+import os, sys, json, time
 try:
     import yaml
 except ImportError:
@@ -28,20 +28,18 @@ except Exception: pass
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config
+from cli.client import get_client
 
 TEMPLATES_DIR = config.TEMPLATES_DIR
-API_BASE = config.API_BASE
 
 # ============================================================ 工具函数
 
 def _api(endpoint, data=None, method='POST'):
-    """调 render_server REST API"""
-    url = f"{API_BASE}/{endpoint.lstrip('/')}"
+    """调 render_server REST API (复用 cli.client)."""
+    c = get_client()
     if method == 'POST':
-        r = requests.post(url, json=data, timeout=600)
-    else:
-        r = requests.get(url, timeout=30)
-    return r.json()
+        return c.post(endpoint, json=data)
+    return c.get(endpoint)
 
 
 def _fill(template_str, variables):

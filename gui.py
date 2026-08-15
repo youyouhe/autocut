@@ -6,7 +6,6 @@
 
 import os, sys, json, time, tempfile, shutil
 import gradio as gr
-import requests
 
 try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
@@ -19,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = config.GUI_UPLOAD_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-API_BASE = config.API_BASE
+from cli.client import get_client
 LLM_MODEL = QWEN_MODEL
 llm = OpenAI(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL)
 
@@ -33,15 +32,14 @@ session = {
 
 def api_post(endpoint, data=None, files=None):
     try:
-        r = requests.post(f"{API_BASE}/{endpoint}", json=data, files=files, timeout=600)
-        return r.json()
+        return get_client().post(endpoint, json=data, files=files)
     except Exception as e:
         return {'error': str(e)}
 
 
 def api_get(endpoint):
     try:
-        return requests.get(f"{API_BASE}/{endpoint}", timeout=30).json()
+        return get_client().get(endpoint)
     except Exception as e:
         return {'error': str(e)}
 

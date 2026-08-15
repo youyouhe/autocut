@@ -14,22 +14,19 @@ import requests
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config
-
-RENDER_SERVER = config.API_BASE
+from cli.client import ApiClient
 
 app = Server("video-tools")
+_client = ApiClient(base_url=config.API_BASE)
 
 
 def _post(endpoint, **kwargs):
     """调 render_server REST API"""
-    url = f"{RENDER_SERVER}/{endpoint.lstrip('/')}"
-    r = requests.post(url, timeout=600, **kwargs)
-    return r.json()
+    return _client.post(endpoint, **kwargs)
 
 
 def _get(endpoint):
-    r = requests.get(f"{RENDER_SERVER}/{endpoint.lstrip('/')}", timeout=30)
-    return r.json()
+    return _client.get(endpoint)
 
 
 @app.list_tools()

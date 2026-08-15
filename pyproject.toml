@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autocut"
+version = "1.0.0"
+description = "AutoCut CLI — 剪映 AI 自动化视频生产工作台客户端"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+autocut = "autocut_cli:main"
+
+[tool.setuptools]
+# 仅打包 CLI 相关模块 (渲染/驱动等 Windows 侧代码不随包分发)
+py-modules = ["autocut_cli", "config", "cli.client", "cli.output"]
+
+[tool.setuptools.packages.find]
+include = ["cli*"]

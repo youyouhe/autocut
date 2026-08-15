@@ -9,7 +9,7 @@
 #   1. render_server 在 localhost:9002 运行
 #   2. 阿里云 DashScope API key (Qwen3.7-Plus)
 
-import os, sys, json, time, requests
+import os, sys, json, time
 
 try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
@@ -17,11 +17,12 @@ except Exception: pass
 from openai import OpenAI
 from perceive import perceive_video, QWEN_API_KEY, QWEN_BASE_URL
 import config
+from cli.client import get_client
 
-API_BASE = config.API_BASE
 LLM_MODEL = "qwen3.7-plus"
 
 llm = OpenAI(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL)
+_client = get_client()
 
 
 def llm_chat(system, user, max_tokens=2000):
@@ -38,14 +39,12 @@ def llm_chat(system, user, max_tokens=2000):
 
 
 def api_post(endpoint, data=None):
-    """调 render_server"""
-    r = requests.post(f"{API_BASE}/{endpoint}", json=data, timeout=600)
-    return r.json()
+    """调 render_server (复用 cli.client)"""
+    return _client.post(endpoint, json=data)
 
 
 def api_get(endpoint):
-    r = requests.get(f"{API_BASE}/{endpoint}", timeout=30)
-    return r.json()
+    return _client.get(endpoint)
 
 
 def plan_video(user_intent, asset_analyses):
