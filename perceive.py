@@ -34,7 +34,8 @@ def ffprobe_meta(video_path):
            '-show_entries', 'stream=width,height,duration,r_frame_rate',
            '-show_entries', 'format=duration',
            '-of', 'json', video_path]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                       errors='replace')
     try:
         data = json.loads(r.stdout) if r.stdout.strip() else {}
     except json.JSONDecodeError:
@@ -78,7 +79,8 @@ def detect_scenes_ffmpeg(video_path, threshold=0.3):
            f'select=gt(scene\\,{threshold}),showinfo',
            '-f', 'null', '-']
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
+                           errors='replace')
     except Exception:
         return []
     scenes = []
@@ -228,6 +230,23 @@ def _parse_srt(srt_text):
     return segments
 
 
+def _segments_to_srt(segments):
+    """segments [{start,end,text}] → 标准 SRT 文本"""
+    def ts(t):
+        ms = int(round(t * 1000))
+        h = ms // 3600000; ms %= 3600000
+        m = ms // 60000; ms %= 60000
+        s = ms // 1000; ms %= 1000
+        return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
+    out = []
+    for i, seg in enumerate(segments, 1):
+        out.append(str(i))
+        out.append(f'{ts(seg["start"])} --> {ts(seg["end"])}')
+        out.append(seg.get('text', ''))
+        out.append('')
+    return '\n'.join(out)
+
+
 def _parse_asr_response(raw):
     """解析 ASR 响应为 segments 列表（支持 JSON / SRT / 包装格式）"""
     if raw is None:
@@ -319,6 +338,8 @@ def perceive_video(video_path, do_asr=True, frame_count=5):
     # ④ ASR 音频转录
     if do_asr:
         result['audio'] = asr_transcribe(video_path)
+        if isinstance(result['audio'], dict) and result['audio'].get('segments'):
+            result['srt'] = _segments_to_srt(result['audio']['segments'])
 
     return result
 
