@@ -25,7 +25,8 @@ def cmd_health(args):
 
 def cmd_perceive(args):
     c = _client(args)
-    r = c.perceive(args.path, do_asr=not args.no_asr, frames=args.frames)
+    r = c.perceive(args.path, do_asr=not args.no_asr, frames=args.frames,
+                   force=args.force)
     output.print_result(r, args.json)
 
 
@@ -188,6 +189,7 @@ def build_parser():
     sp.add_argument('path')
     sp.add_argument('--no-asr', action='store_true', help='跳过语音转录')
     sp.add_argument('--frames', type=int, default=4, help='抽帧数')
+    sp.add_argument('--force', action='store_true', help='强制重新分析(忽略缓存)')
     sp.set_defaults(func=cmd_perceive)
 
     # draft
