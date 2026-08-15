@@ -14,6 +14,7 @@ export interface Asset {
   analysis?: PerceiveResult | { error?: string } | null;
   _cached?: boolean;
   _duration?: string;
+  _portrait?: boolean;
 }
 
 export interface Draft {

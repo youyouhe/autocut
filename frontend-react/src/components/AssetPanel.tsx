@@ -69,10 +69,12 @@ export default function AssetPanel({ assets, setAssets, refreshAssets }: Props) 
     playbackMemory[asset.path] = v.currentTime; v.pause();
   };
   const onVideoMeta = (asset: Asset, e: React.SyntheticEvent<HTMLVideoElement>) => {
-    const d = e.currentTarget.duration; if (!d || !isFinite(d)) return;
+    const v = e.currentTarget;
+    const d = v.duration; if (!d || !isFinite(d)) return;
     const m = Math.floor(d / 60), s = Math.floor(d % 60);
     const dur = m > 0 ? `${m}:${String(s).padStart(2, '0')}` : `${Math.round(d)}s`;
-    setAssets(prev => prev.map(a => a.path === asset.path ? { ...a, _duration: dur } : a));
+    const portrait = v.videoHeight > v.videoWidth;
+    setAssets(prev => prev.map(a => a.path === asset.path ? { ...a, _duration: dur, _portrait: portrait } : a));
   };
 
   const selectedAsset = assets.find(a => a.name === selected) || null;
@@ -121,12 +123,12 @@ export default function AssetPanel({ assets, setAssets, refreshAssets }: Props) 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
           {assets.map((asset) => (
             <div key={asset.path} className={`border overflow-hidden group flex flex-col transition-colors ${selected === asset.name ? 'border-[#121212]' : 'border-[#121212]/10 hover:border-[#121212]/30'}`}>
-              <div className="h-48 border-b border-[#121212]/10 flex items-center justify-center relative bg-[#121212]/5"
+              <div className={`${asset._portrait ? 'h-72' : 'h-48'} border-b border-[#121212]/10 flex items-center justify-center relative bg-[#121212]`}
                 onMouseEnter={asset.type === 'video' ? (e) => onVideoHover(e, asset) : undefined}
                 onMouseLeave={asset.type === 'video' ? (e) => onVideoLeave(e, asset) : undefined}>
                 {asset.type === 'video' ? (
                   <>
-                    <video className="absolute inset-0 w-full h-full object-cover" src={api.serveUrl(asset.path)} preload="metadata" muted={!soundOn} playsInline
+                    <video className={`absolute inset-0 w-full h-full ${asset._portrait ? 'object-contain' : 'object-cover'}`} src={api.serveUrl(asset.path)} preload="metadata" muted={!soundOn} playsInline
                       onLoadedMetadata={(e) => onVideoMeta(asset, e)} />
                     <div className="absolute inset-0 bg-[#FDFCF8]/80 opacity-0 group-hover:opacity-0 flex items-center justify-center">
                       <Play size={20} strokeWidth={1.5} className="ml-1 text-[#121212]" />
