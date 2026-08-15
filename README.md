@@ -76,6 +76,10 @@ autocut/
 ├── localsend_recv.py       # LocalSend v2.2 协议局域网素材接收服务
 ├── mcp_video_server.py     # MCP Server 标准工具服务端
 ├── gui.py                  # Gradio 交互工作台
+├── autocut_cli.py          # 命令行入口 (autocut 命令, 供脚本/外部程序调用)
+├── cli/                    # CLI 实现 (client.py=统一 HTTP 客户端, output.py=输出格式化)
+├── config.py               # 集中配置 (路径/端口/超时, 全部 .env 驱动)
+├── task_store.py           # 渲染任务 SQLite 持久化
 ├── serve.bat               # Windows 一键无窗口静默启动脚本
 ├── templates/              # 预设 YAML 视频模板
 │   ├── emotional_quotes.yaml
@@ -85,6 +89,7 @@ autocut/
 ├── static/                 # 前端编译构建产物 (由 render_server 托管)
 ├── VectCutAPI/             # 剪映草稿协议解析与时间线操作核心库
 ├── requirements.txt        # Python 依赖清单
+├── pyproject.toml          # 打包配置 (pip install -e . 后全局 autocut 命令)
 ├── .env.example            # 环境变量配置模板
 └── .mcp.json               # MCP 服务配置文件
 ```
@@ -166,10 +171,66 @@ python template_engine.py render \
   -v '{"title":"旅行的意义","sentences":["不是所有的路都有终点","最美的风景在路上","出发本身就是到达"],"bg_video":"C:/path/to/video.mp4"}'
 ```
 
-### 2. 跨端素材投放 (LocalSend)
+### 2. 命令行 CLI (供脚本 / 其他程序调用)
+
+`autocut` 是面向外部调用者的命令行入口，通过 `render_server` 的 REST API 操作（需先启动主服务）。默认连接 `http://127.0.0.1:9002`，可用 `--api` 或 `$AUTOCUT_API` 指向远程渲染机。
+
+```bash
+# 全局安装 (可选, pip install -e . 后直接可用 autocut 命令)
+pip install -e .
+# 或直接以脚本方式运行
+python autocut_cli.py <command>
+```
+
+**常用命令**：
+
+```bash
+# 健康检查
+autocut health
+
+# 分析视频 (画面 + 语音 + 场景)
+autocut perceive ./素材.mp4
+autocut perceive ./素材.mp4 --no-asr --frames 8
+
+# 草稿编辑 (create → add → save)
+autocut draft create                                  # 返回 draft_id
+autocut draft add-video <draft_id> ./clip.mp4 --start 0 --end 10
+autocut draft add-text  <draft_id> "标题" --start 0 --end 5 --size 14
+autocut draft add-audio <draft_id> ./bgm.mp3 --volume 0.5
+autocut draft save <draft_id>
+autocut draft list
+
+# 渲染 (提交 / 等待 / 下载)
+autocut render <draft_id>                             # 提交, 返回 task_id
+autocut render <draft_id> --wait --progress           # 阻塞等待 + 进度打到 stderr
+autocut render <draft_id> --wait -o out.mp4           # 出片后自动下载
+autocut render-status <task_id>
+autocut render-list
+autocut render-download <task_id> -o out.mp4
+
+# 模板
+autocut template list
+autocut template render emotional_quotes --vars '{"title":"旅行"}' --render
+```
+
+**脚本化约定**：
+- `--json` 输出纯 JSON（`stdout` 保持纯净，进度/日志走 `stderr`），便于 `jq` 管道。
+- 退出码：`0` 成功，`1` 失败（HTTP 错误 / 渲染失败 / 超时）。
+- 远程调用：`AUTOCUT_API=http://渲染机:9002 autocut render <id> --wait`，无需在调用机安装剪映。
+
+**一行流水线示例**：
+
+```bash
+DRAFT=$(autocut draft create --json | jq -r .output.draft_id)
+autocut draft add-video "$DRAFT" ./a.mp4 --start 0 --end 10
+autocut draft add-text  "$DRAFT" "开场" --start 0 --end 3
+autocut render "$DRAFT" --wait -o out.mp4
+```
+
+### 3. 跨端素材投放 (LocalSend)
 启动主服务后，同一局域网下的手机或电脑打开 **LocalSend App**，搜索设备将发现 `AI 视频工作台`，直接选择图片/视频发送即可自动进入待选素材池。
 
-### 3. 作为 MCP 工具集成 (Claude Code / Cursor)
+### 4. 作为 MCP 工具集成 (Claude Code / Cursor)
 在 Claude Desktop 或 Claude Code 配置中添加 `.mcp.json`：
 ```json
 {
