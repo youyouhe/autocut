@@ -478,8 +478,9 @@ class Driver:
         return False
 
     def _wait_click_countdown(self, base, name, timeout=600):
-        """等一次 Press 点击 (type==2), 期间每 15s 输出倒计时日志."""
+        """等一次 Press 点击 (type==2), 期间每 5s 输出倒计时日志."""
         start = time.time()
+        log('    开始等待点击【%s】, 最多 %ds...' % (name, timeout))
         last_log = 0.0
         while time.time() - start < timeout:
             with self.cond:
@@ -488,7 +489,7 @@ class Driver:
                         and self.last_capture.get('type') == 2):
                     return self.last_capture
             elapsed = time.time() - start
-            if elapsed - last_log >= 15:
+            if elapsed - last_log >= 5:
                 last_log = elapsed
                 log('    >>> 等待点击【%s】: 已等 %ds / 剩余 %ds'
                     % (name, int(elapsed), int(timeout - elapsed)))
