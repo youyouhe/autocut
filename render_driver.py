@@ -1,6 +1,6 @@
 # render_driver.py
 # 剪映端到端渲染闭环 driver
-#   calibrate : 引导点击 4 个关键位置(草稿卡片/导出/确认/返回首页), 存 calib.json
+#   calibrate : 弹窗引导点击 5 个关键位置(草稿卡片/导出/确认/关完成窗/关编辑器), 存 calib.json
 #   run [N]   : 按校准坐标自动渲染 N 次(单草稿闭环; 多草稿需扩展卡片网格定位)
 # 依赖: hook_inject1.js (主进程内 hook, 提供捕获+clickfull), render_monitor.py (完成检测)
 
@@ -477,6 +477,15 @@ class Driver:
             time.sleep(0.5)
         return False
 
+    def _calib_prompt(self, title, msg):
+        """弹 Windows 提示框引导校准 (阻塞到点确定). 用户无需看日志即可完成校准."""
+        import ctypes
+        MB_OK = 0x0
+        MB_ICONINFORMATION = 0x40
+        MB_SETFOREGROUND = 0x10000
+        ctypes.windll.user32.MessageBoxW(
+            None, msg, title, MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND)
+
     def calibrate(self):
         log('=== 校准模式: 依次点击 5 个位置 (每步 600s, 已捕获的增量保存) ===')
         log('    (记录 global 坐标 + 当时的 win/dev 指针, 用于 run 时 seed)')
@@ -489,10 +498,15 @@ class Driver:
             ('close_editor', '关闭编辑窗口', '关闭编辑器返回首页 (左上角返回/关闭)'),
         ]
         caps = {}
-        if not self.wait_any_event(timeout=30):
-            log('WARN: 30s 内没任何鼠标事件, dev 未种子. 点击仍可能失败.')
+        # 简短等一次鼠标事件做 dev 种子 (3s, 超时也继续; dev 由 hook 程序化获取)
+        self.wait_any_event(timeout=3)
         for i, (key, name, desc) in enumerate(steps):
-            log('[%d/5] >>> 请点击【%s】 — %s' % (i + 1, name, desc))
+            self._calib_prompt(
+                'AutoCut 校准 %d/%d' % (i + 1, len(steps)),
+                '本步请点击剪映中的【%s】\n\n%s\n\n'
+                '点"确定"后剪映会自动弹到前台,\n请用鼠标点击其中的【%s】, 捕获后自动进入下一步。' % (name, desc, name))
+            focus_jianying()  # 拉剪映到前台, 方便用户立即点击
+            log('[%d/%d] >>> 请点击【%s】 — %s' % (i + 1, len(steps), name, desc))
             base = self.capture_count
             cap = self.wait_click_from(base, timeout=600)
             if not cap:
@@ -513,6 +527,7 @@ class Driver:
                 (key, cap.get('lx'), cap.get('ly'), cap.get('gx'), cap.get('gy')))
             if key == 'confirm':
                 self.wait_render_done(timeout=600)
+        self._calib_prompt('AutoCut 校准', '校准完成! 坐标已保存到 calib.json。')
         log('CALIB DONE -> %s' % CALIB_FILE)
         return True
 
