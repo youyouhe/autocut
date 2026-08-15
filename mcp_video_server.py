@@ -12,7 +12,10 @@ except Exception: pass
 import requests
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RENDER_SERVER = "http://localhost:9002"
+sys.path.insert(0, HERE)
+import config
+
+RENDER_SERVER = config.API_BASE
 
 app = Server("video-tools")
 

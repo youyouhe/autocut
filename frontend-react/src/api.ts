@@ -30,6 +30,13 @@ export interface Draft {
 
 export type RenderStatus = 'queued' | 'rendering' | 'done' | 'error';
 
+export interface RenderProgress {
+  stage?: string | null;
+  pct?: number | null;
+  elapsed?: number | null;
+  temp_bytes?: number | null;
+}
+
 export interface RenderTask {
   task_id: string;
   status: RenderStatus;
@@ -40,6 +47,7 @@ export interface RenderTask {
   duration?: number;
   error?: string;
   created?: number;
+  progress?: RenderProgress;
 }
 
 export interface PerceiveResult {

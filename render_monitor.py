@@ -1,6 +1,8 @@
 import os, time, datetime
 
-VIDEOS = r'C:\Users\Administrator\Videos'
+import config
+
+VIDEOS = config.VIDEOS_DIR
 TEMP = os.path.join(VIDEOS, '.__jianying_export_temp_folder__')
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'render_monitor.log')
 

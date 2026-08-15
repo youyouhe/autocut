@@ -86,6 +86,15 @@ def _detect_outbound_ip():
 _received_log = []        # [{fileName, size, fileType, sender_ip, time, saved_path}]
 _received_lock = threading.Lock()
 
+# === 收件回调 (render_server 注册, 用于自动感知) ===
+_on_file_received = None  # callable(path) -> None
+
+
+def set_on_file_received(cb):
+    """注册收件完成回调. cb(absolute_path). 返回 None 则清除."""
+    global _on_file_received
+    _on_file_received = cb
+
 
 def _log_received(fname, size, ftype, sender_ip, saved_path):
     with _received_lock:
@@ -93,6 +102,12 @@ def _log_received(fname, size, ftype, sender_ip, saved_path):
             'fileName': fname, 'size': size, 'fileType': ftype,
             'sender_ip': sender_ip, 'time': time.time(), 'saved_path': saved_path,
         })
+    cb = _on_file_received
+    if cb:
+        try:
+            cb(saved_path)
+        except Exception as e:
+            logger.warning('on_file_received 回调异常: %s', e)
 
 
 def _device_info():

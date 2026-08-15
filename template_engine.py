@@ -26,8 +26,11 @@ try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TEMPLATES_DIR = os.path.join(HERE, 'templates')
-API_BASE = "http://localhost:9002"
+sys.path.insert(0, HERE)
+import config
+
+TEMPLATES_DIR = config.TEMPLATES_DIR
+API_BASE = config.API_BASE
 
 # ============================================================ 工具函数
 

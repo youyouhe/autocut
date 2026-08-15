@@ -38,6 +38,12 @@ focus_*.txt
 _repro*.txt
 chat_test_out.txt
 2026-*.txt
+render_*.log
+
+# Machine-local runtime data
+calib.json
+test_draft.zip
+tasks.db
 
 # Media & Uploads (runtime data)
 gui_uploads/*

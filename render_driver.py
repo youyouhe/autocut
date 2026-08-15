@@ -9,16 +9,25 @@ import frida, time, json, os, sys, threading, subprocess
 try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
 
+import config
+
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 HOOK        = os.path.join(SCRIPT_DIR, 'hook_focus.js')   # agent 线程 focusWindow + 点击
-CALIB_FILE  = os.path.join(SCRIPT_DIR, 'calib.json')       # 现在只存 global 坐标
+CALIB_FILE  = config.CALIB_FILE                            # 现在只存 global 坐标
 MONITOR_LOG = os.path.join(SCRIPT_DIR, 'render_monitor.log')
 MONITOR_PY  = os.path.join(SCRIPT_DIR, 'render_monitor.py')
 # 剪映草稿根目录 (剪映实时监视此目录, 放草稿文件夹进去会自动识别)
-DRAFT_ROOT  = r'C:\Users\Administrator\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft'
+DRAFT_ROOT  = config.DRAFT_ROOT
 
 def log(m):
     print('[%s] %s' % (time.strftime('%H:%M:%S'), m), flush=True)
+
+
+def emit_progress(stage, pct, **extra):
+    """输出机器可读进度行, render_server 解析 '[PROGRESS] {json}' 更新任务状态."""
+    d = {'stage': stage, 'pct': pct}
+    d.update(extra)
+    print('[PROGRESS] %s' % json.dumps(d, ensure_ascii=False), flush=True)
 
 def inject_draft(src_draft_dir, new_name=None):
     """复制源草稿文件夹到剪映草稿根目录, 改 id/名字/时间(排首页第一).
@@ -115,11 +124,9 @@ def start_jianying_in_desktop(desktop=JY_DESKTOP):
         log('打开桌面: %s' % desktop)
     # 不杀所有剪映 (多桌面互不干扰). 若该桌面已有剪映(上次没关), 单例会复用.
     # 找 exe
-    base = r'C:\Users\Administrator\AppData\Local\JianyingPro\Apps'
-    exe = None
-    for d in sorted(os.listdir(base), reverse=True):
-        p = os.path.join(base, d, 'JianyingPro.exe')
-        if os.path.exists(p): exe = p; break
+    exe = config.find_jianying_exe()
+    if not exe:
+        log('未找到 JianyingPro.exe (检查 config.JY_APP_BASE)'); return None, hDesk
     # STARTUPINFO 指定 lpDesktop
     class STARTUPINFO(ctypes.Structure):
         _fields_ = [('cb', wintypes.DWORD),('lpReserved', wintypes.LPWSTR),('lpDesktop', wintypes.LPWSTR),
@@ -164,7 +171,7 @@ def focus_jianying():
     return hwnd
 
 # 预设窗口尺寸 (校准坐标时用的尺寸; resize 到此尺寸保证坐标准)
-PRESET_W, PRESET_H = 1280, 720
+PRESET_W, PRESET_H = config.PRESET_W, config.PRESET_H
 
 def resize_jianying(w=PRESET_W, h=PRESET_H):
     """把剪映主窗口 resize 成预设尺寸 (坐标基于此尺寸). 返回 hwnd 或 None."""
@@ -183,8 +190,14 @@ def resize_jianying(w=PRESET_W, h=PRESET_H):
     log('resize 剪映窗口: %dx%d -> %dx%d' % (cur_w, cur_h, w, h))
     return hwnd
 
-def kill_jianying():
-    """关闭所有剪映进程"""
+def kill_jianying(pid=None):
+    """关闭剪映进程. 指定 pid 只杀该进程; 否则杀所有 (慎用, 影响其他桌面)."""
+    if pid:
+        subprocess.run(['powershell', '-NoProfile', '-Command',
+            'Stop-Process -Id %d -Force -ErrorAction SilentlyContinue' % pid],
+            capture_output=True)
+        log('已关闭剪映 PID=%d' % pid)
+        return
     subprocess.run(['powershell', '-NoProfile', '-Command',
         "Get-Process JianyingPro -ErrorAction SilentlyContinue | Stop-Process -Force"],
         capture_output=True)
@@ -193,17 +206,10 @@ def kill_jianying():
 def start_jianying(exe_path=None):
     """启动剪映, 等主窗口就绪 (最多 60s). 返回 main pid 或 None"""
     if exe_path is None:
-        # 自动找最新版本的 JianyingPro.exe
-        base = r'C:\Users\Administrator\AppData\Local\JianyingPro\Apps'
-        exe_path = None
-        try:
-            for d in sorted(os.listdir(base), reverse=True):
-                p = os.path.join(base, d, 'JianyingPro.exe')
-                if os.path.exists(p):
-                    exe_path = p; break
-        except Exception: pass
+        exe_path = config.find_jianying_exe()
         if not exe_path:
-            exe_path = os.path.join(base, '5.9.0.11632', 'JianyingPro.exe')
+            log('未找到 JianyingPro.exe (检查 config.JY_APP_BASE)')
+            return None
     subprocess.Popen([exe_path], cwd=os.path.dirname(exe_path))
     log('启动剪映: %s' % exe_path)
     # 等主窗口 (有 MainWindowTitle)
@@ -411,11 +417,20 @@ class Driver:
     def wait_render_done(self, draft_name, timeout=300):
         """等目标 mp4 生成 (按草稿名). 剪映输出 <draft_name>.mp4 或 <draft_name>(N).mp4.
         判断: 该名字的 mp4 出现 + 大小稳定 (>1MB 且 2 秒不变) = 完成."""
-        VIDEOS = r'C:\Users\Administrator\Videos'
+        VIDEOS = config.VIDEOS_DIR
+        TEMP = os.path.join(VIDEOS, '.__jianying_export_temp_folder__')
         log('等待 %s*.mp4 生成 (最多 %ds)...' % (draft_name, timeout))
         start = time.time()
         last_size = 0; stable_count = 0
         while time.time() - start < timeout:
+            # 导出进度: 临时目录 mp4 字节数增长 (渲染进行中)
+            temp_bytes = 0
+            try:
+                for f in os.listdir(TEMP):
+                    if f.endswith('.mp4'):
+                        temp_bytes += os.path.getsize(os.path.join(TEMP, f))
+            except Exception:
+                pass
             try:
                 files = [f for f in os.listdir(VIDEOS) if f.endswith('.mp4') and f.startswith(draft_name)]
             except: files = []
@@ -431,12 +446,14 @@ class Driver:
                         stable_count = 0; last_size = sz
                     if stable_count >= 2:  # 稳定 2 次 (~3s)
                         log('渲染完成! %s size=%d' % (files[0], sz)); return True
+            emit_progress('rendering', None, elapsed=int(time.time() - start),
+                          temp_bytes=temp_bytes)
             time.sleep(1.5)
         log('等待渲染超时'); return False
 
     def wait_render_start(self, timeout=15):
         """等 temp 文件出现 (渲染开始). 用于 confirm 后验证点中了."""
-        TEMP = r'C:\Users\Administrator\Videos\.__jianying_export_temp_folder__'
+        TEMP = os.path.join(config.VIDEOS_DIR, '.__jianying_export_temp_folder__')
         start = time.time()
         while time.time() - start < timeout:
             try: temps = [f for f in os.listdir(TEMP) if f.endswith('.mp4')]
@@ -445,19 +462,6 @@ class Driver:
                 return True
             time.sleep(0.5)
         return False
-
-    def wait_render_done_old(self, timeout=600):
-        log('等待渲染完成 (最多 %ds)...' % timeout)
-        start = time.time(); seen_start = False
-        while time.time() - start < timeout:
-            if os.path.exists(MONITOR_LOG):
-                try: content = open(MONITOR_LOG, encoding='utf-8').read()
-                except: content = ''
-                if 'RENDER STARTED' in content: seen_start = True
-                if seen_start and 'RENDER DONE' in content:
-                    log('渲染完成!'); return True
-            time.sleep(1)
-        log('等待渲染超时'); return False
 
     def calibrate(self):
         log('=== 校准模式: 依次点击 4 个位置 (每步 600s, 已捕获的增量保存) ===')
@@ -556,6 +560,7 @@ class Driver:
         if search_term is None:
             search_term = draft_name
         inject_draft(src_draft_dir, draft_name)
+        emit_progress('inject', 10)
         time.sleep(2)  # 等剪映实时识别
 
         # dev 程序化
@@ -587,6 +592,7 @@ class Driver:
             log('点结果卡片'); self.click_global2(caps['result_card']['lx'], caps['result_card']['ly'])
             base_show = self.get_shown_count()
             self.wait_editor_ready(base_show, timeout=30)
+        emit_progress('open', 30)
         time.sleep(1)
 
         # 3. 导出: 点导出 → 等 modal → 点 confirm → 等 mp4 (失败重试, 每次重试重新点导出刷 modal)
@@ -601,17 +607,20 @@ class Driver:
             else:
                 log('  ⚠ 导出窗口未出现, 重试')
                 time.sleep(1); continue
+            emit_progress('export', 50)
             time.sleep(0.8)  # 等 modal 完全显示
             # confirm 在 modal (lastShownWin = 最近显示的 = 导出窗口)
             st = self.script.exports_sync.lastshown()
             log('  modal win=%s (showCount=%d)' % (st.get('win'), st.get('showCount')))
             log('点确认按钮(modal)'); self.click_modal(caps['confirm']['lx'], caps['confirm']['ly'])
+            emit_progress('confirm', 60)
             # 短等看 mp4 是否开始生成 (20s)
             if self.wait_render_done(draft_name, timeout=20):
                 ok = True; break
             log('  ⚠ confirm 未触发渲染 (attempt %d), 重新点导出' % (attempt + 1))
         if not ok:
             log('confirm 4次未触发渲染, 中止'); return False
+        emit_progress('done', 100)
 
         # 4. 关闭完成提示 (完成窗口 modal) + 关编辑器回首页
         if ok and 'close_done' in caps:
@@ -697,14 +706,14 @@ def main():
             if close_after and ok:
                 log('渲染完成, 关闭剪映...')
                 d.detach()
-                kill_jianying()
+                kill_jianying(self_started_pid)  # 桌面模式只杀自己的实例
         elif mode == 'render-once':
             # 完整外部触发流程: 确保剪映开 → 渲染 → 关闭
             ok = d.run(count=1)
             if ok:
                 log('渲染完成, 关闭剪映...')
                 d.detach()
-                kill_jianying()
+                kill_jianying(self_started_pid)
             sys.exit(0 if ok else 2)
         elif mode == 'render-draft':
             # 渲染指定草稿: 注入 + 搜索 + 打开 + 导出
@@ -717,7 +726,7 @@ def main():
             if close_after and ok:
                 log('渲染完成, 关闭剪映...')
                 d.detach()
-                kill_jianying()
+                kill_jianying(self_started_pid)
             sys.exit(0 if ok else 2)
         else:
             log('用法:')

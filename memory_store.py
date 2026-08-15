@@ -3,9 +3,11 @@
 # 2. ≤50MB 的视频文件 → 按需载入内存 (前端预览/分析零磁盘 IO)
 import os, json, hashlib, time, threading
 
+import config
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(HERE, 'analysis_cache')
-VIDEO_CACHE_DIR = os.path.join(HERE, 'gui_uploads')
+CACHE_DIR = config.CACHE_DIR
+VIDEO_CACHE_DIR = config.GUI_UPLOAD_DIR
 
 MAX_VIDEO_RAM = 50 * 1024 * 1024   # 50MB 以下载入内存
 MAX_TOTAL_RAM = 500 * 1024 * 1024 # 总视频内存上限 500MB
@@ -33,11 +35,12 @@ def load_all_analysis():
         if not f.endswith('.json'):
             continue
         try:
-            data = json.load(open(os.path.join(CACHE_DIR, f), encoding='utf-8'))
+            with open(os.path.join(CACHE_DIR, f), encoding='utf-8') as fh:
+                data = json.load(fh)
             key = f.replace('.json', '')
             _analysis_store[key] = data
             count += 1
-        except:
+        except Exception:
             pass
     return count
 
@@ -61,8 +64,9 @@ def save_analysis(path, result):
         _analysis_store[h] = result
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
-        json.dump(result, open(os.path.join(CACHE_DIR, f'{h}.json'), 'w', encoding='utf-8'), ensure_ascii=False)
-    except:
+        with open(os.path.join(CACHE_DIR, f'{h}.json'), 'w', encoding='utf-8') as fh:
+            json.dump(result, fh, ensure_ascii=False)
+    except Exception:
         pass
 
 
@@ -87,73 +91,83 @@ def maybe_load_video(path):
     """如果视频 ≤50MB，载入内存。返回 True 如果已在/已载入内存。"""
     global _video_ram_used
 
-    # 已在内存
-    if path in _video_store:
-        return True
+    # 已在内存 (读检查加锁, 避免与 evict 竞态)
+    with _lock:
+        if path in _video_store:
+            return True
 
     try:
         size = os.path.getsize(path)
-    except:
+    except OSError:
         return False
 
     if size > MAX_VIDEO_RAM:
         return False  # 超过 50MB 不载入
 
-    # 检查总内存上限
-    if _video_ram_used + size > MAX_TOTAL_RAM:
-        _evict_oldest_video()
-
+    # 磁盘 IO 放锁外 (耗时), 读完再入锁写
     try:
         with open(path, 'rb') as f:
             data = f.read()
-        with _lock:
-            _video_store[path] = {
-                'data': data,
-                'size': size,
-                'name': os.path.basename(path),
-                'time': time.time(),
-            }
-            _video_ram_used += size
-        return True
-    except:
+    except OSError:
         return False
+
+    with _lock:
+        # double-check: 可能其他线程已载入
+        if path in _video_store:
+            return True
+        # 腾出空间 (可能需淘汰多个)
+        while _video_ram_used + size > MAX_TOTAL_RAM and _video_store:
+            _evict_oldest_locked()
+        if _video_ram_used + size > MAX_TOTAL_RAM:
+            return False
+        _video_store[path] = {
+            'data': data,
+            'size': size,
+            'name': os.path.basename(path),
+            'time': time.time(),
+        }
+        _video_ram_used += size
+    return True
 
 
 def get_video_bytes(path):
     """从内存取视频字节 (None = 不在内存)"""
-    entry = _video_store.get(path)
-    return entry['data'] if entry else None
+    with _lock:
+        entry = _video_store.get(path)
+        if entry:
+            entry['time'] = time.time()  # LRU 访问刷新
+        return entry['data'] if entry else None
 
 
 def get_video_info(path):
     """取视频内存缓存信息"""
-    entry = _video_store.get(path)
-    if not entry:
-        return None
-    return {'name': entry['name'], 'size': entry['size'], 'cached': True}
+    with _lock:
+        entry = _video_store.get(path)
+        if not entry:
+            return None
+        return {'name': entry['name'], 'size': entry['size'], 'cached': True}
 
 
-def _evict_oldest_video():
-    """淘汰最久未访问的视频，释放内存"""
+def _evict_oldest_locked():
+    """淘汰最久未访问的视频 (调用方须持有 _lock)"""
     global _video_ram_used
     if not _video_store:
         return
-    oldest = min(_video_store.items(), key=lambda x: x[1]['time'])
-    with _lock:
-        if oldest[0] in _video_store:
-            freed = _video_store[oldest[0]]['size']
-            del _video_store[oldest[0]]
-            _video_ram_used -= freed
+    oldest_key = min(_video_store.items(), key=lambda x: x[1]['time'])[0]
+    freed = _video_store[oldest_key]['size']
+    del _video_store[oldest_key]
+    _video_ram_used -= freed
 
 
 def video_cache_stats():
     """视频内存缓存统计"""
-    return {
-        'videos_in_ram': len(_video_store),
-        'ram_used_mb': round(_video_ram_used / 1024 / 1024, 1),
-        'ram_limit_mb': round(MAX_TOTAL_RAM / 1024 / 1024, 0),
-        'max_single_mb': round(MAX_VIDEO_RAM / 1024 / 1024, 0),
-    }
+    with _lock:
+        return {
+            'videos_in_ram': len(_video_store),
+            'ram_used_mb': round(_video_ram_used / 1024 / 1024, 1),
+            'ram_limit_mb': round(MAX_TOTAL_RAM / 1024 / 1024, 0),
+            'max_single_mb': round(MAX_VIDEO_RAM / 1024 / 1024, 0),
+        }
 
 
 # ============================================================ 启动

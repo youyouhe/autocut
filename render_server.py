@@ -8,7 +8,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
 
+import config
 from flask import Flask, request, jsonify, send_file, send_from_directory
+from werkzeug.utils import secure_filename
+
+import task_store
 
 # 融合 VectCutAPI 编辑端点 (create_draft/add_video/add_text/.../save_draft)
 VC_DIR = os.path.join(HERE, 'VectCutAPI')
@@ -23,10 +27,9 @@ except Exception as e:
     print('[fusion] VectCutAPI import 失败 (%s), 仅渲染模式' % repr(e)[:100])
 
 # === 路径 ===
-UPLOAD_DIR = os.path.join(HERE, 'render_uploads')
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-DRAFT_ROOT = r'C:\Users\Administrator\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft'
-VIDEOS = r'C:\Users\Administrator\Videos'
+UPLOAD_DIR = config.UPLOAD_DIR
+DRAFT_ROOT = config.DRAFT_ROOT
+VIDEOS = config.VIDEOS_DIR
 
 # === 多桌面渲染池 ===
 # N 个独立桌面, 每个跑一个剪映实例, 支持并行渲染
@@ -35,67 +38,30 @@ tasks = {}
 TASK_LOCK = threading.Lock()
 RENDER_QUEUE = queue.Queue()
 
-# 桌面池配置 (2 个桌面 = 2 并行渲染)
-DESKTOP_NAMES = ['JYRender_0']  # 串行单桌面 (JYRender_1 导出 modal 点 confirm 不触发渲染, 弃用)
-desktop_pool = {}  # desk_name -> {pid, busy, lock}
+
+def _persist(task_id):
+    """落盘任务状态 (task_store, 失败不阻塞)."""
+    try:
+        with TASK_LOCK:
+            t = tasks.get(task_id)
+        if t:
+            task_store.upsert(t)
+    except Exception:
+        pass
 
 
-def init_desktop_pool():
-    """预启动: 每个桌面启动剪映实例."""
-    for desk in DESKTOP_NAMES:
-        print('[pool] 启动桌面 %s...' % desk, flush=True)
-        pid = start_desktop_jianying(desk)
-        if pid:
-            desktop_pool[desk] = {'pid': pid, 'busy': False}
-            print('[pool] %s 剪映就绪 PID=%d' % (desk, pid), flush=True)
-        else:
-            print('[pool] %s 启动失败!' % desk, flush=True)
+def _new_task(task_id, **fields):
+    """创建任务: 写内存 dict + 落盘."""
+    with TASK_LOCK:
+        tasks[task_id] = dict(fields)
+        tasks[task_id].setdefault('created', time.time())
+        tasks[task_id]['task_id'] = task_id
+    _persist(task_id)
+    return tasks[task_id]
 
-
-def start_desktop_jianying(desk_name):
-    """在指定桌面启动剪映, 返回 PID."""
-    import ctypes
-    from ctypes import wintypes
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    GENERIC_ALL = 0x10000000
-    OpenDesktop = user32.OpenDesktopW
-    OpenDesktop.restype = wintypes.HDESK
-    OpenDesktop.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    CreateDesktop = user32.CreateDesktopW
-    CreateDesktop.restype = wintypes.HDESK
-    CreateDesktop.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
-    hDesk = OpenDesktop(desk_name, 0, True, GENERIC_ALL)
-    if not hDesk:
-        hDesk = CreateDesktop(desk_name, None, None, 0, GENERIC_ALL, None)
-    # exe
-    base = r'C:\Users\Administrator\AppData\Local\JianyingPro\Apps'
-    exe = None
-    for d in sorted(os.listdir(base), reverse=True):
-        p = os.path.join(base, d, 'JianyingPro.exe')
-        if os.path.exists(p): exe = p; break
-    class STARTUPINFO(ctypes.Structure):
-        _fields_ = [('cb', wintypes.DWORD),('lpReserved', wintypes.LPWSTR),('lpDesktop', wintypes.LPWSTR),
-                    ('lpTitle', wintypes.LPWSTR),('dwX', wintypes.DWORD),('dwY', wintypes.DWORD),
-                    ('dwXSize', wintypes.DWORD),('dwYSize', wintypes.DWORD),('dwXCountChars', wintypes.DWORD),
-                    ('dwYCountChars', wintypes.DWORD),('dwFillAttribute', wintypes.DWORD),('dwFlags', wintypes.DWORD),
-                    ('wShowWindow', wintypes.WORD),('cbReserved2', wintypes.WORD),('lpReserved2', ctypes.c_void_p),
-                    ('hStdInput', wintypes.HANDLE),('hStdOutput', wintypes.HANDLE),('hStdError', wintypes.HANDLE)]
-    class PROCESS_INFORMATION(ctypes.Structure):
-        _fields_ = [('hProcess', wintypes.HANDLE),('hThread', wintypes.HANDLE),('dwProcessId', wintypes.DWORD),('dwThreadId', wintypes.DWORD)]
-    si = STARTUPINFO(); si.cb = ctypes.sizeof(si)
-    si.lpDesktop = desk_name
-    si.dwFlags = 0x00000001 | 0x00000080; si.wShowWindow = 1
-    si.dwXSize = 1280; si.dwYSize = 720
-    pi = PROCESS_INFORMATION()
-    CreateProcessW = kernel32.CreateProcessW
-    CreateProcessW.restype = wintypes.BOOL
-    CreateProcessW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
-                               wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
-                               ctypes.POINTER(STARTUPINFO), ctypes.POINTER(PROCESS_INFORMATION)]
-    if CreateProcessW(exe, None, None, None, False, 0, None, None, ctypes.byref(si), ctypes.byref(pi)):
-        return pi.dwProcessId
-    return None
+# 桌面池配置 (桌面数 = 并行渲染数, 见 config.DESKTOP_NAMES)
+DESKTOP_NAMES = config.DESKTOP_NAMES
+desktop_pool = {}  # desk_name -> {busy}
 
 
 DESKTOP_LOCK = threading.Lock()
@@ -118,6 +84,70 @@ def release_desktop(desk):
         desktop_pool[desk]['busy'] = False
 
 
+def _parse_progress_line(line):
+    """解析 '[PROGRESS] {json}' 行, 返回 dict 或 None."""
+    s = line.strip()
+    if not s.startswith('[PROGRESS] '):
+        return None
+    try:
+        return json.loads(s[len('[PROGRESS] '):])
+    except (ValueError, TypeError):
+        return None
+
+
+def _stream_process(cmd, task_id):
+    """运行 cmd, 流式解析 '[PROGRESS] {json}' 行更新任务进度.
+    返回 (returncode, stdout, stderr). 用读线程而非 select (Windows 不支持管道 select)."""
+    proc = subprocess.Popen(
+        cmd, cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding='utf-8', errors='replace', bufsize=1)
+    out_buf, err_buf = [], []
+    out_lock, err_lock = threading.Lock(), threading.Lock()
+
+    def _update_progress(line):
+        data = _parse_progress_line(line)
+        if data is None:
+            return
+        with TASK_LOCK:
+            tasks[task_id]['progress'] = {
+                'stage': data.get('stage'),
+                'pct': data.get('pct'),
+                'elapsed': data.get('elapsed'),
+                'temp_bytes': data.get('temp_bytes'),
+            }
+
+    def _read(stream, buf, lock, is_stdout):
+        for line in iter(stream.readline, ''):
+            if not line:
+                break
+            with lock:
+                buf.append(line)
+            if is_stdout:
+                _update_progress(line)
+
+    tout = threading.Thread(target=_read, args=(proc.stdout, out_buf, out_lock, True), daemon=True)
+    terr = threading.Thread(target=_read, args=(proc.stderr, err_buf, err_lock, False), daemon=True)
+    tout.start(); terr.start()
+
+    try:
+        proc.wait(timeout=config.RENDER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+
+    tout.join(timeout=5)
+    terr.join(timeout=5)
+    return proc.returncode, ''.join(out_buf), ''.join(err_buf)
+
+
+def _run_render_streaming(task_id, argv):
+    """流式运行 render_driver, 解析 '[PROGRESS] {json}' 行更新任务进度.
+    返回 (returncode, stdout_tail, stderr_tail)."""
+    cmd = [sys.executable, os.path.join(HERE, 'render_driver.py')] + argv
+    return _stream_process(cmd, task_id)
+
+
 def render_pool_worker():
     """worker 线程: 取队列任务 → 获取桌面 → 渲染 (每次自己 start+kill 剪映)."""
     while True:
@@ -127,21 +157,22 @@ def render_pool_worker():
             with TASK_LOCK:
                 tasks[task_id]['status'] = 'error'
                 tasks[task_id]['error'] = 'no free desktop'
+            _persist(task_id)
             continue
         with TASK_LOCK:
             tasks[task_id]['status'] = 'rendering'
             tasks[task_id]['desktop'] = desk
+            tasks[task_id]['started_at'] = time.time()
+        _persist(task_id)
         try:
             t0 = time.time()
             # render_driver 自己启动剪映到 desk 桌面, 渲染完 kill 自己的剪映
-            r = subprocess.run(
-                [sys.executable, os.path.join(HERE, 'render_driver.py'),
-                 'render-draft', draft_dir, '--desktop', '--desktop-name', desk],
-                cwd=HERE, capture_output=True, text=True,
-                encoding='utf-8', errors='replace', timeout=600)
+            code, stdout_tail, stderr_tail = _run_render_streaming(
+                task_id, ['render-draft', draft_dir, '--desktop', '--desktop-name', desk])
             dt = time.time() - t0
             with TASK_LOCK:
-                if r.returncode == 0:
+                tasks[task_id]['duration'] = dt
+                if code == 0:
                     mps = sorted([f for f in os.listdir(VIDEOS)
                                   if f.endswith('.mp4') and (f.startswith(draft_name) or f.startswith('rd'))],
                                  key=lambda f: os.path.getmtime(os.path.join(VIDEOS, f)), reverse=True)
@@ -149,17 +180,23 @@ def render_pool_worker():
                         tasks[task_id]['status'] = 'done'
                         tasks[task_id]['mp4_path'] = os.path.join(VIDEOS, mps[0])
                         tasks[task_id]['mp4_name'] = mps[0]
-                        tasks[task_id]['duration'] = dt
                     else:
                         tasks[task_id]['status'] = 'error'
                         tasks[task_id]['error'] = 'no mp4'
                 else:
                     tasks[task_id]['status'] = 'error'
-                    tasks[task_id]['error'] = (r.stdout or '')[-800:]
+                    tasks[task_id]['error'] = (stderr_tail + stdout_tail)[-800:]
+            _persist(task_id)
+        except subprocess.TimeoutExpired:
+            with TASK_LOCK:
+                tasks[task_id]['status'] = 'error'
+                tasks[task_id]['error'] = 'render timeout (%ds)' % config.RENDER_TIMEOUT
+            _persist(task_id)
         except Exception as e:
             with TASK_LOCK:
                 tasks[task_id]['status'] = 'error'
                 tasks[task_id]['error'] = str(e)
+            _persist(task_id)
         finally:
             release_desktop(desk)
             RENDER_QUEUE.task_done()
@@ -181,57 +218,34 @@ def find_draft_dir(extract_dir):
     return None
 
 
-def render_worker(task_id, draft_dir, draft_name):
-    """后台线程: 调 render_driver render-draft --desktop --close"""
+def task_cleanup_loop():
+    """定期清理过期任务记录 (config.TASK_TTL)"""
+    while True:
+        time.sleep(3600)
+        now = time.time()
+        with TASK_LOCK:
+            expired = [k for k, v in tasks.items()
+                       if now - v.get('created', now) > config.TASK_TTL]
+            for tid in expired:
+                tasks.pop(tid, None)
+        for tid in expired:
+            try:
+                task_store.delete(tid)
+            except Exception:
+                pass
+
+
+def restore_tasks():
+    """启动时从 SQLite 恢复任务历史; 未完成 (queued/rendering) 的标记为中断."""
+    saved = task_store.load_all()
     with TASK_LOCK:
-        tasks[task_id]['status'] = 'rendering'
-        tasks[task_id]['started_at'] = time.time()
-    try:
-        t0 = time.time()
-        r = subprocess.run(
-            [sys.executable, os.path.join(HERE, 'render_driver.py'),
-             'render-draft', draft_dir, '--desktop', '--close'],
-            cwd=HERE, capture_output=True, text=True,
-            encoding='utf-8', errors='replace', timeout=600)
-        dt = time.time() - t0
-        with TASK_LOCK:
-            if r.returncode == 0:
-                # 找输出的 mp4 (draft_name.mp4 或 draft_name(N).mp4)
-                mps = sorted(
-                    [f for f in os.listdir(VIDEOS)
-                     if f.endswith('.mp4') and f.startswith(draft_name)],
-                    key=lambda f: os.path.getmtime(os.path.join(VIDEOS, f)), reverse=True)
-                if mps:
-                    tasks[task_id]['status'] = 'done'
-                    tasks[task_id]['mp4_path'] = os.path.join(VIDEOS, mps[0])
-                    tasks[task_id]['mp4_name'] = mps[0]
-                    tasks[task_id]['duration'] = dt
-                else:
-                    # render-draft 注入名是 rd<ts>, 找最新的 rd*.mp4
-                    rds = sorted(
-                        [f for f in os.listdir(VIDEOS)
-                         if f.endswith('.mp4') and f.startswith('rd')],
-                        key=lambda f: os.path.getmtime(os.path.join(VIDEOS, f)), reverse=True)
-                    if rds:
-                        tasks[task_id]['status'] = 'done'
-                        tasks[task_id]['mp4_path'] = os.path.join(VIDEOS, rds[0])
-                        tasks[task_id]['mp4_name'] = rds[0]
-                        tasks[task_id]['duration'] = dt
-                    else:
-                        tasks[task_id]['status'] = 'error'
-                        tasks[task_id]['error'] = 'render ok but no mp4 found'
-            else:
-                tasks[task_id]['status'] = 'error'
-                tasks[task_id]['error'] = (r.stdout or '')[-800:]
-                tasks[task_id]['duration'] = dt
-    except subprocess.TimeoutExpired:
-        with TASK_LOCK:
-            tasks[task_id]['status'] = 'error'
-            tasks[task_id]['error'] = 'render timeout (600s)'
-    except Exception as e:
-        with TASK_LOCK:
-            tasks[task_id]['status'] = 'error'
-            tasks[task_id]['error'] = str(e)
+        for tid, t in saved.items():
+            if t.get('status') in ('queued', 'rendering'):
+                t['status'] = 'error'
+                t['error'] = '服务重启, 任务中断'
+                task_store.upsert(t)
+            tasks.setdefault(tid, t)
+    print('[task_store] 恢复 %d 条历史任务' % len(saved), flush=True)
 
 
 @app.route('/render', methods=['POST'])
@@ -253,15 +267,15 @@ def render():
     f.save(zip_path)
     try:
         with zipfile.ZipFile(zip_path) as z:
-            z.extractall(extract_dir)
+            config.safe_zip_extract(z, extract_dir)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         return jsonify({'error': 'zip extract failed: %s' % e}), 400
     draft_dir = find_draft_dir(extract_dir)
     if not draft_dir:
         return jsonify({'error': 'invalid draft: no draft_content.json in zip'}), 400
-    with TASK_LOCK:
-        tasks[task_id] = {'status': 'queued', 'draft_name': draft_name,
-                          'draft_dir': draft_dir, 'created': time.time()}
+    _new_task(task_id, status='queued', draft_name=draft_name, draft_dir=draft_dir)
     enqueue_render(task_id, draft_dir, draft_name)
     return jsonify({'task_id': task_id, 'status': 'queued',
                     'poll': '/render/status/%s' % task_id})
@@ -291,7 +305,9 @@ def render_download(task_id):
 def render_list():
     with TASK_LOCK:
         return jsonify([{'task_id': k, 'status': v.get('status'),
-                         'mp4': v.get('mp4_name'), 'draft': v.get('draft_name')}
+                         'mp4': v.get('mp4_name'), 'draft': v.get('draft_name'),
+                         'duration': v.get('duration'), 'error': v.get('error'),
+                         'progress': v.get('progress'), 'created': v.get('created')}
                         for k, v in tasks.items()])
 
 
@@ -328,9 +344,7 @@ def render_by_draft_id(draft_id):
     if not content_json:
         return jsonify({'error': 'not a valid jianying draft (no draft_content.json / draft_info.json)'}), 400
     task_id = uuid.uuid4().hex[:8]
-    with TASK_LOCK:
-        tasks[task_id] = {'status': 'queued', 'draft_name': draft_id,
-                          'draft_dir': draft_dir, 'created': time.time()}
+    _new_task(task_id, status='queued', draft_name=draft_id, draft_dir=draft_dir)
     enqueue_render(task_id, draft_dir, draft_id)
     return jsonify({'task_id': task_id, 'status': 'queued',
                     'poll': '/render/status/%s' % task_id})
@@ -351,6 +365,8 @@ def api_perceive_by_path():
     force = data.get('force', False)
     if not path or not os.path.exists(path):
         return jsonify({'error': f'文件不存在: {path}'}), 400
+    if not config.is_allowed_path(path):
+        return jsonify({'error': 'path not allowed'}), 403
 
     # 内存查询 (O(1) dict)
     if not force:
@@ -434,6 +450,8 @@ def api_list_drafts():
 def api_draft_cover():
     """获取草稿封面图"""
     folder = request.args.get('folder', '')
+    if not config.safe_folder_name(folder):
+        return '', 400
     cover_path = os.path.join(DRAFT_ROOT, folder, 'draft_cover.jpg')
     if os.path.exists(cover_path):
         return send_file(cover_path, mimetype='image/jpeg')
@@ -443,7 +461,8 @@ def api_draft_cover():
 @app.route('/api/drafts/<folder>', methods=['DELETE'])
 def api_delete_draft(folder):
     """删除草稿（文件夹 + root_meta 同步）"""
-    import shutil
+    if not config.safe_folder_name(folder):
+        return jsonify({'error': 'invalid folder name'}), 400
     draft_path = os.path.join(DRAFT_ROOT, folder)
     if not os.path.isdir(draft_path):
         return jsonify({'error': 'not found'}), 404
@@ -452,10 +471,12 @@ def api_delete_draft(folder):
         # 同步 root_meta
         root_meta = os.path.join(DRAFT_ROOT, 'root_meta_info.json')
         if os.path.exists(root_meta):
-            m = json.load(open(root_meta, encoding='utf-8'))
+            with open(root_meta, encoding='utf-8') as fh:
+                m = json.load(fh)
             m['all_draft_store'] = [d for d in m.get('all_draft_store', []) if os.path.basename(d.get('draft_fold_path', '')) != folder]
             m['draft_ids'] = len(m['all_draft_store'])
-            json.dump(m, open(root_meta, 'w', encoding='utf-8'), ensure_ascii=False)
+            with open(root_meta, 'w', encoding='utf-8') as fh:
+                json.dump(m, fh, ensure_ascii=False)
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -479,11 +500,13 @@ def api_memory_analysis_list():
 
 @app.route('/api/video/serve', methods=['GET'])
 def api_video_serve():
-    """从内存缓存提供视频字节 (≤50MB 视频零磁盘 IO)"""
+    """从内存缓存提供视频字节 (≤50MB 视频零磁盘 IO). 仅限白名单目录."""
     from memory_store import maybe_load_video, get_video_bytes
     path = request.args.get('path', '')
     if not path or not os.path.exists(path):
         return jsonify({'error': 'not found'}), 404
+    if not config.is_allowed_path(path):
+        return jsonify({'error': 'path not allowed'}), 403
     # 尝试载入内存
     maybe_load_video(path)
     data = get_video_bytes(path)
@@ -499,7 +522,7 @@ def api_video_serve():
 
 @app.route('/api/upload', methods=['POST'])
 def api_upload():
-    """前端文件上传，保存到 gui_uploads/"""
+    """前端文件上传，保存到 render_uploads/ (文件名强制净化防穿越)"""
     files = request.files.getlist('files')
     if not files:
         files = [request.files.get('file')]
@@ -507,7 +530,7 @@ def api_upload():
     for f in files:
         if not f or not f.filename:
             continue
-        name = f.filename
+        name = secure_filename(f.filename) or 'upload.bin'
         dst = os.path.join(UPLOAD_DIR, name)
         f.save(dst)
         ext = os.path.splitext(name)[1].lower()
@@ -543,12 +566,17 @@ def api_assets_scan():
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
     """SSE 流式对话: Agent 用 function calling 按需查询资源信息"""
+    data = request.json or {}
+    message = data.get('message', '')
+    asset_paths = data.get('asset_paths', []) or []
+    draft_id = data.get('draft_id')
+    if not message:
+        return jsonify({'error': 'message is required'}), 400
+
     from flask import Response, stream_with_context
     from openai import OpenAI as _OAI
     from memory_store import get_analysis
     from perceive import QWEN_API_KEY as QWEN_KEY, QWEN_BASE_URL as QWEN_URL, QWEN_MODEL as LLM_MODEL
-
-    data = request.json or {}
 
     # 定义工具 (function calling)
     TOOLS = [
@@ -840,65 +868,11 @@ def api_chat():
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 
-def _parse_and_execute_actions(text, draft_id):
-    """解析 LLM 输出中的 ACTION 行，执行并返回结果"""
-    import re
-    results = []
-    current_draft = draft_id
-
-    for line in text.split('\n'):
-        line = line.strip()
-        if not line.startswith('ACTION:'):
-            continue
-        action = line[7:].strip()
-
-        try:
-            if 'CREATE_DRAFT' in action:
-                r = _post_internal('create_draft', {'width': 1080, 'height': 1920})
-                if r.get('success'):
-                    current_draft = r['output']['draft_id']
-                    results.append({'text': f'✅ 草稿: {current_draft}', 'success': True, 'draft_id': current_draft})
-                else:
-                    results.append({'text': f'❌ 创建失败', 'success': False})
-
-            elif 'ADD_VIDEO' in action and current_draft:
-                url_match = re.search(r'\(([^)]+)\)', action)
-                url = url_match.group(1) if url_match else ''
-                r = _post_internal('add_video', {'draft_id': current_draft, 'video_url': url, 'start': 0, 'end': 10})
-                ok = r.get('success', False)
-                results.append({'text': f'{"✅" if ok else "❌"} 添加视频', 'success': ok})
-
-            elif 'ADD_TEXT' in action and current_draft:
-                parts = re.findall(r'[\w]+=*"?([^",)]+)"?', action)
-                txt = parts[0] if parts else '文字'
-                r = _post_internal('add_text', {'draft_id': current_draft, 'text': txt, 'start': 0, 'end': 5, 'font_size': 12})
-                ok = r.get('success', False)
-                results.append({'text': f'{"✅" if ok else "❌"} 添加文字: {txt}', 'success': ok})
-
-            elif 'SAVE_DRAFT' in action and current_draft:
-                r = _post_internal('save_draft', {'draft_id': current_draft})
-                ok = r.get('success', False)
-                results.append({'text': f'{"✅" if ok else "❌"} 保存草稿', 'success': ok})
-
-            elif 'RENDER' in action and current_draft:
-                r = _post_internal(f'render/draft/{current_draft}')
-                tid = r.get('task_id')
-                if tid:
-                    results.append({'text': f'✅ 渲染已提交: {tid}', 'success': True})
-                else:
-                    results.append({'text': '❌ 渲染失败', 'success': False})
-
-        except Exception as e:
-            results.append({'text': f'❌ {e}', 'success': False})
-
-    return results
-
-
 def _post_internal(endpoint, data=None):
     """内部 API 调用 (HTTP 自调). 用独立 session 避免 SSE 长连接复用导致的连接池耗尽.
     render/draft 等异步端点立即返回; 同步端点最多等 120s."""
     try:
-        url = f"http://127.0.0.1:9002/{endpoint}"
+        url = f"{config.API_BASE}/{endpoint}"
         with requests.Session() as s:
             r = s.post(url, json=data or {}, timeout=120)
             return r.json()
@@ -946,12 +920,36 @@ def api_localsend_start():
         import localsend_recv
         ok = localsend_recv.start_server(save_dir=UPLOAD_DIR)
         if ok:
+            if config.AUTO_PERCEIVE:
+                localsend_recv.set_on_file_received(_auto_perceive_hook)
             return jsonify({'running': True, 'alias': localsend_recv.ALIAS,
                             'port': localsend_recv.PORT, 'save_dir': UPLOAD_DIR})
         return jsonify({'running': False,
                         'error': '端口 53317 被占, 请关闭官方 LocalSend 或其他占用程序后重试'}), 409
     except Exception as e:
         return jsonify({'running': False, 'error': str(e)}), 500
+
+
+def _auto_perceive_hook(path):
+    """素材收件回调: 视频文件后台调 VLM 分析 (避免阻塞收件线程)."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in ('.mp4', '.mov', '.avi', '.mkv'):
+        return
+
+    from memory_store import has_analysis, save_analysis
+
+    def _work():
+        if has_analysis(path):
+            return
+        try:
+            from perceive import perceive_video
+            result = perceive_video(path)
+            save_analysis(path, result)
+            print('[auto-perceive] 已分析 %s' % os.path.basename(path), flush=True)
+        except Exception as e:
+            print('[auto-perceive] 分析失败 %s: %s' % (os.path.basename(path), e), flush=True)
+
+    threading.Thread(target=_work, daemon=True).start()
 
 
 @app.route('/api/localsend/stop', methods=['POST'])
@@ -966,15 +964,15 @@ def api_localsend_stop():
         return jsonify({'running': False, 'error': str(e)}), 500
 
 
-# ============================================================ 静态文件 (Vue 构建产物)
-STATIC_DIR = os.path.join(HERE, 'static')
+# ============================================================ 静态文件 (React 构建产物)
+STATIC_DIR = config.STATIC_DIR
 
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve_vue(path):
-    """Flask 服务 Vue SPA (catch-all)"""
+    """Flask 服务前端 SPA (catch-all)"""
     if not os.path.isdir(STATIC_DIR):
-        return jsonify({'error': 'Frontend not built. Run: cd frontend && npm run build'}), 404
+        return jsonify({'error': 'Frontend not built. Run: cd frontend-react && npm run build'}), 404
     full_path = os.path.join(STATIC_DIR, path)
     if os.path.isfile(full_path):
         return send_from_directory(STATIC_DIR, path)
@@ -1038,7 +1036,10 @@ def perceive_result_api():
 
 
 if __name__ == '__main__':
-    print('render_server on http://localhost:9002 (多桌面: %s)' % DESKTOP_NAMES, flush=True)
+    print('render_server on http://%s:%d (多桌面: %s)' % (
+        config.RENDER_SERVER_HOST, config.RENDER_SERVER_PORT, DESKTOP_NAMES), flush=True)
+    # 恢复历史任务
+    restore_tasks()
     # 初始化桌面池 (不预启动剪映; render_driver 每次 --desktop-name 自己 start+kill)
     for desk in DESKTOP_NAMES:
         desktop_pool[desk] = {'busy': False}
@@ -1046,15 +1047,29 @@ if __name__ == '__main__':
         threading.Thread(target=render_pool_worker, daemon=True).start()
     print('[pool] %d 个 worker 启动' % len(DESKTOP_NAMES), flush=True)
 
+    # 过期任务清理
+    threading.Thread(target=task_cleanup_loop, daemon=True).start()
+
     # LocalSend 接收端: 按需启动 (前端"接收"按钮触发, 不随服务常驻)
     print('[localsend] 接收端待命 (前端点"接收"按钮启动), 端口 53317', flush=True)
 
-    # CORS for dev mode (Vite on 5173)
-    @app.after_request
-    def after_request(response):
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-        return response
+    # CORS (仅配置的来源; 前端生产环境同源托管不需要)
+    if config.CORS_ALLOW_ORIGINS:
+        @app.after_request
+        def after_request(response):
+            origin = request.headers.get('Origin', '')
+            if origin in config.CORS_ALLOW_ORIGINS:
+                response.headers.add('Access-Control-Allow-Origin', origin)
+                response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+                response.headers.add('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS')
+                response.headers.add('Vary', 'Origin')
+            return response
 
-    app.run(host='0.0.0.0', port=9002, debug=False)
+    try:
+        from waitress import serve
+        print('[server] waitress 生产服务器', flush=True)
+        serve(app, host=config.RENDER_SERVER_HOST, port=config.RENDER_SERVER_PORT,
+              threads=8, channel_timeout=900)
+    except ImportError:
+        print('[server] WARN: 未安装 waitress, 回退 Flask 开发服务器 (pip install waitress)', flush=True)
+        app.run(host=config.RENDER_SERVER_HOST, port=config.RENDER_SERVER_PORT, debug=False)

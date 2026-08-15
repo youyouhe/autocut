@@ -1,10 +1,14 @@
 # test_5x.py — 连续跑 5 次 render-draft, 验证稳定性
+# 用法: python test_5x.py [草稿文件夹路径] [--desktop]
 import subprocess, sys, time, os
 HERE = os.path.dirname(os.path.abspath(__file__))
 try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
 
-DRAFT = r'C:\Users\Administrator\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft\8月11日'
+import config
+
+_args = [a for a in sys.argv[1:] if not a.startswith('--')]
+DRAFT = _args[0] if _args else os.path.join(config.DRAFT_ROOT, '8月11日')
 DESKTOP = '--desktop' in sys.argv  # 加 --desktop 跑真后台模式
 results = []
 for i in range(1, 6):
@@ -16,7 +20,7 @@ for i in range(1, 6):
     dt = time.time() - t0
     ok = (r.returncode == 0)
     # 找输出 mp4 (最新的 rd*.mp4)
-    vids = r'C:\Users\Administrator\Videos'
+    vids = config.VIDEOS_DIR
     mps = sorted([f for f in os.listdir(vids) if f.startswith('rd') and f.endswith('.mp4')],
                  key=lambda f: os.path.getmtime(os.path.join(vids, f)), reverse=True)
     out = mps[0] if mps else '?'

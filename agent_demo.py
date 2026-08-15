@@ -16,8 +16,9 @@ except Exception: pass
 
 from openai import OpenAI
 from perceive import perceive_video, QWEN_API_KEY, QWEN_BASE_URL
+import config
 
-API_BASE = "http://localhost:9002"
+API_BASE = config.API_BASE
 LLM_MODEL = "qwen3.7-plus"
 
 llm = OpenAI(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL)
@@ -159,7 +160,7 @@ def main():
 
     # === 步骤1: 感知素材 ===
     print(f"\n[1/5] 感知素材...")
-    VIDEOS = r'C:\Users\Administrator\Videos'
+    VIDEOS = config.VIDEOS_DIR
     mp4s = sorted([f for f in os.listdir(VIDEOS) if f.endswith('.mp4')],
                   key=lambda f: os.path.getmtime(os.path.join(VIDEOS, f)), reverse=True)
 

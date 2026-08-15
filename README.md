@@ -16,15 +16,18 @@
   - **完全不抢占前台鼠标、键盘与窗口焦点**，后台默默极速出片，不干扰日常办公娱乐。
 - 👁️ **全模态 AI 视频感知与质检（Perceive 模块）**
   - 集成 **Qwen3.7-Plus 视觉大模型** 进行视频均匀抽帧理解、画面描述、精彩片段识别与情绪分析。
-  - 内置 **自建 ASR 语音识别**，快速提取视频口播文案与逐字时间戳。
+  - 内置 ASR 语音识别，快速提取视频口播文案与逐字时间戳（支持 `remote` 第三方 / `local` faster-whisper 离线两种后端）。
   - 利用 FFmpeg 进行镜头转场/场景分割检测，支持成片质量自动质检。
 - ⚡ **声明式 YAML 视频模板引擎**
   - 支持通过 YAML 声明式配置视频时间轴、图文轨道、转场动画与音频背景，一键参数替换并批量渲染。
   - 内置多种预设模板（情感语录、产品介绍、知识短视频等）。
 - 📲 **LocalSend 原生协议跨端素材接收**
-  - 内置 LocalSend v2.2 UDP 广播与 HTTP 服务，局域网内的手机（iOS/Android）或电脑打开官方 LocalSend App 即可秒传素材至工作台，自动归档并触发分析。
+  - 内置 LocalSend v2.2 UDP 广播与 HTTP 服务，局域网内的手机（iOS/Android）或电脑打开官方 LocalSend App 即可秒传素材至工作台，自动归档并（可选）自动触发 AI 分析。
 - 🤖 **MCP (Model Context Protocol) 标准工具支持**
   - 完整实现 MCP Video Server（`mcp_video_server.py`），支持 Claude Code、Cursor、Agent 直接调用工具进行素材感知、草稿创建与自动出片。
+- 📊 **渲染实时进度与任务持久化**
+  - 渲染过程实时回传阶段（注入/打开/导出/渲染中）与导出字节数，前端进度条展示。
+  - 任务历史落盘 SQLite（`tasks.db`），服务重启后结果可追溯。
 - 🎨 **双模式交互工作台**
   - **现代化 React 19 SPA**：基于 Vite + Tailwind CSS，直接由后端 Flask（9002 端口）一体化托管。
   - **Gradio 快速原型台**（`gui.py`）：适合交互式调试与单步验证。
@@ -114,20 +117,26 @@ QWEN_API_KEY=your_dashscope_api_key_here
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_MODEL=qwen3.7-plus
 
-# 语音转文字 ASR (可选)
+# 语音转文字 ASR (可选; ASR_BACKEND=remote 音频上传第三方 / =local 本地 faster-whisper)
 ASR_ENDPOINT=https://asr.smartbid.site/inference
 ASR_API_KEY=your_asr_api_key_here
+# ASR_BACKEND=local      # 本地离线识别 (pip install faster-whisper)
+# AUTO_PERCEIVE=1        # 素材收件后自动后台分析 (消耗 VLM token)
 
 # 服务端口
 RENDER_SERVER_PORT=9002
 ```
+
+> 所有路径/端口/渲染参数集中在 `config.py`，由环境变量驱动。剪映安装目录、草稿目录、导出目录默认按当前 Windows 用户自动推导，特殊安装才需在 `.env` 中覆盖 `JY_APP_BASE` / `JY_DRAFT_ROOT` / `VIDEOS_DIR`。
+>
+> **安全提示**：服务默认监听 `0.0.0.0` 以便局域网 LocalSend/手机访问。文件上传、草稿删除、视频下发等接口已做路径净化与白名单校验；若暴露到不可信网络，请自行加反向代理鉴权或改 `RENDER_SERVER_HOST=127.0.0.1`。
 
 ### 4. 首次校准（重要）
 初次运行前，需对本机分辨率及剪映 UI 关键按钮坐标进行校准：
 ```bash
 python render_driver.py calibrate
 ```
-> 按照终端提示依次点击剪映界面上的：① 草稿卡片、② 导出按钮、③ 确认导出、④ 返回首页，坐标将自动保存至 `calib.json`。
+> 按照终端提示依次点击剪映界面上的：① 草稿卡片、② 导出按钮、③ 确认导出、④ 返回首页，坐标将自动保存至 `calib.json`（该文件为本机数据，已被 gitignore，可参考 `calib.json.example`）。
 
 ### 5. 启动服务
 - **方式一：主服务（推荐）**
@@ -192,6 +201,17 @@ npm install
 npm run build
 ```
 编译产物将自动输出至 `../static/` 目录，供 `render_server.py` 直接分发。
+
+---
+
+## 🧪 开发与测试
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v     # 纯逻辑单元测试 (不依赖 Windows/剪映)
+```
+
+生产部署建议：`pip install waitress`（`render_server.py` 检测到后自动启用，替代 Flask 开发服务器）。
 
 ---
 

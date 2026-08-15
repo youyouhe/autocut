@@ -12,14 +12,15 @@ try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
 
 from openai import OpenAI
-from perceive import QWEN_API_KEY, QWEN_BASE_URL, perceive_video, perceive_result
+from perceive import QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL, perceive_video, perceive_result
+import config
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_DIR = os.path.join(HERE, 'gui_uploads')
+UPLOAD_DIR = config.GUI_UPLOAD_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-API_BASE = "http://localhost:9002"
-LLM_MODEL = "qwen3.7-plus"
+API_BASE = config.API_BASE
+LLM_MODEL = QWEN_MODEL
 llm = OpenAI(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL)
 
 # 全局状态

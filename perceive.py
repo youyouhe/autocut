@@ -22,6 +22,8 @@ ASR_ENDPOINT = os.environ.get("ASR_ENDPOINT", "https://asr.smartbid.site/inferen
 ASR_API_KEY = os.environ.get("ASR_API_KEY", "")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import config
 
 
 # ============================================================ 基础工具
@@ -124,6 +126,13 @@ def vlm_analyze(frames, prompt, max_tokens=1000):
 # ============================================================ ASR
 
 def asr_transcribe(video_path):
+    """转录音频，返回词级/句级时间戳. 按 config.ASR_BACKEND 选择 remote/local."""
+    if config.ASR_BACKEND == 'local':
+        return asr_transcribe_local(video_path)
+    return asr_transcribe_remote(video_path)
+
+
+def asr_transcribe_remote(video_path):
     """调自建 ASR 转录音频，返回词级/句级时间戳"""
     import requests
     with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
@@ -153,6 +162,38 @@ def asr_transcribe(video_path):
         return {'error': str(e)}
     finally:
         try: os.unlink(tmp_mp3)
+        except: pass
+
+
+def asr_transcribe_local(video_path):
+    """本地 faster-whisper 转录 (离线, 音频不出本机). 需 pip install faster-whisper."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return {'error': 'ASR_BACKEND=local 需要 faster-whisper: pip install faster-whisper'}
+
+    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+        tmp_wav = tmp.name
+    try:
+        subprocess.run(['ffmpeg', '-y', '-i', video_path, '-vn',
+                        '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', tmp_wav],
+                       capture_output=True, timeout=120)
+        if not os.path.exists(tmp_wav) or os.path.getsize(tmp_wav) == 0:
+            return {'error': 'ffmpeg 提取音频失败'}
+
+        model = WhisperModel(config.ASR_LOCAL_MODEL, device=config.ASR_LOCAL_DEVICE,
+                             compute_type='int8')
+        segments_iter, info = model.transcribe(tmp_wav, language='zh',
+                                               vad_filter=True, beam_size=5)
+        segments = [{'start': round(s.start, 3), 'end': round(s.end, 3),
+                     'text': s.text.strip()} for s in segments_iter]
+        full_text = ' '.join(s['text'] for s in segments)
+        return {'segments': segments, 'full_text': full_text,
+                'asr_model': f'faster-whisper/{config.ASR_LOCAL_MODEL}'}
+    except Exception as e:
+        return {'error': str(e)}
+    finally:
+        try: os.unlink(tmp_wav)
         except: pass
 
 
@@ -315,7 +356,8 @@ if __name__ == '__main__':
     video = sys.argv[1] if len(sys.argv) > 1 else None
     if not video:
         # 找 Videos 最新 mp4
-        VIDEOS = r'C:\Users\Administrator\Videos'
+        import config
+        VIDEOS = config.VIDEOS_DIR
         mp4s = sorted([f for f in os.listdir(VIDEOS) if f.endswith('.mp4')],
                       key=lambda f: os.path.getmtime(os.path.join(VIDEOS, f)), reverse=True)
         if mp4s:

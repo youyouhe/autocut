@@ -58,6 +58,35 @@ export default function RenderPanel() {
     }
   };
 
+  const STAGE_LABELS: Record<string, string> = {
+    inject: '注入草稿', open: '打开编辑器', export: '导出面板',
+    confirm: '确认导出', rendering: '渲染中', done: '完成',
+  };
+
+  const stageLabel = (s?: string | null) => s ? (STAGE_LABELS[s] ?? s) : '';
+
+  const ProgressBar = ({ task }: { task: RenderTask }) => {
+    const p = task.progress;
+    if (task.status !== 'rendering' || !p) return null;
+    const pct = typeof p.pct === 'number' ? p.pct : (p.stage === 'rendering' ? null : 0);
+    const mb = p.temp_bytes != null ? ` · ${(p.temp_bytes / 1048576).toFixed(1)}MB` : '';
+    const elapsed = p.elapsed != null ? ` · ${p.elapsed}s` : '';
+    return (
+      <div className="mt-3">
+        <div className="flex items-center justify-between text-[10px] uppercase tracking-widest opacity-60 mb-1">
+          <span>{stageLabel(p.stage)}{mb}{elapsed}</span>
+        </div>
+        <div className="h-1 w-full bg-[#121212]/10 overflow-hidden">
+          {pct != null ? (
+            <div className="h-full bg-[#121212] transition-all duration-700" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+          ) : (
+            <div className="h-full w-1/3 bg-[#121212] animate-pulse" />
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const isActive = tasks.some(t => ACTIVE.includes(t.status));
 
   return (
@@ -106,6 +135,7 @@ export default function RenderPanel() {
                   {task.duration != null && <span>{task.duration.toFixed(0)}s</span>}
                   {(task.mp4 || task.mp4_name) && <span className="truncate max-w-[200px]">File: {task.mp4 || task.mp4_name}</span>}
                 </div>
+                <ProgressBar task={task} />
                 {task.status === 'error' && task.error && (
                   <div className="mt-3 text-xs text-red-700 border border-red-700/20 bg-red-50 p-3 font-mono break-all">{task.error}</div>
                 )}
