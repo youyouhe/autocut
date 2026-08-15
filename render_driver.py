@@ -414,13 +414,22 @@ class Driver:
             except: pass
             self.monitor_proc = None
 
-    def wait_render_done(self, draft_name, timeout=300):
-        """等目标 mp4 生成 (按草稿名). 剪映输出 <draft_name>.mp4 或 <draft_name>(N).mp4.
-        判断: 该名字的 mp4 出现 + 大小稳定 (>1MB 且 2 秒不变) = 完成."""
+    def wait_render_done(self, draft_name=None, timeout=300):
+        """等目标 mp4 生成. draft_name 给定则按 <draft_name>*.mp4 前缀匹配;
+        draft_name 为 None 则等任意新出现的 mp4 (mtime 晚于调用前, 用于 calibrate/run).
+        判断: mp4 出现 + 大小稳定 (>100KB 且 ~3s 不变) = 完成."""
         VIDEOS = config.VIDEOS_DIR
         TEMP = os.path.join(VIDEOS, '.__jianying_export_temp_folder__')
-        log('等待 %s*.mp4 生成 (最多 %ds)...' % (draft_name, timeout))
+        log('等待 %s*.mp4 生成 (最多 %ds)...' % (draft_name or '*', timeout))
         start = time.time()
+        base_mtime = 0.0
+        if not draft_name:
+            try:
+                existing = [os.path.join(VIDEOS, f) for f in os.listdir(VIDEOS)
+                            if f.endswith('.mp4')]
+                base_mtime = max([os.path.getmtime(p) for p in existing], default=0.0)
+            except Exception:
+                base_mtime = 0.0
         last_size = 0; stable_count = 0
         while time.time() - start < timeout:
             # 导出进度: 临时目录 mp4 字节数增长 (渲染进行中)
@@ -432,7 +441,12 @@ class Driver:
             except Exception:
                 pass
             try:
-                files = [f for f in os.listdir(VIDEOS) if f.endswith('.mp4') and f.startswith(draft_name)]
+                if draft_name:
+                    files = [f for f in os.listdir(VIDEOS)
+                             if f.endswith('.mp4') and f.startswith(draft_name)]
+                else:
+                    files = [f for f in os.listdir(VIDEOS)
+                             if f.endswith('.mp4') and os.path.getmtime(os.path.join(VIDEOS, f)) > base_mtime]
             except: files = []
             if files:
                 # 取最新的
@@ -464,19 +478,21 @@ class Driver:
         return False
 
     def calibrate(self):
-        log('=== 校准模式: 依次点击 4 个位置 (每步 600s, 已捕获的增量保存) ===')
+        log('=== 校准模式: 依次点击 5 个位置 (每步 600s, 已捕获的增量保存) ===')
         log('    (记录 global 坐标 + 当时的 win/dev 指针, 用于 run 时 seed)')
+        resize_jianying()  # 先固定窗口到预设尺寸, 保证校准坐标与渲染时一致
         steps = [
-            ('card',    '草稿卡片', '首页里你要渲染的那个草稿 (若不在首页先点左上角返回)'),
-            ('export',  '导出按钮', '进入编辑器后, 点顶部的"导出"'),
-            ('confirm', '导出确认', '导出弹窗里点"导出"开始渲染'),
-            ('home',    '返回首页', '渲染完成后, 点左上角返回首页'),
+            ('card',         '草稿卡片', '首页里你要渲染的那个草稿 (若不在首页先点左上角返回)'),
+            ('export',       '导出按钮', '进入编辑器后, 点顶部的"导出"'),
+            ('confirm',      '导出确认', '导出弹窗里点"导出"开始渲染'),
+            ('close_done',   '关闭导出完成窗口', '渲染完成后, 点导出完成弹窗的关闭/完成按钮'),
+            ('close_editor', '关闭编辑窗口', '关闭编辑器返回首页 (左上角返回/关闭)'),
         ]
         caps = {}
         if not self.wait_any_event(timeout=30):
             log('WARN: 30s 内没任何鼠标事件, dev 未种子. 点击仍可能失败.')
         for i, (key, name, desc) in enumerate(steps):
-            log('[%d/4] >>> 请点击【%s】 — %s' % (i + 1, name, desc))
+            log('[%d/5] >>> 请点击【%s】 — %s' % (i + 1, name, desc))
             base = self.capture_count
             cap = self.wait_click_from(base, timeout=600)
             if not cap:
@@ -547,7 +563,12 @@ class Driver:
         if not os.path.exists(CALIB_FILE):
             log('没有 calib.json, 先 calibrate'); return False
         caps = json.load(open(CALIB_FILE, encoding='utf-8'))
-        for k in ('search_btn', 'search_box', 'result_card', 'export', 'confirm'):
+        # 桌面模式直接点首页卡片, 无需搜索坐标; 前台模式才需要 search_btn/search_box/result_card
+        if DESKTOP_MODE:
+            need = ('card', 'export', 'confirm')
+        else:
+            need = ('search_btn', 'search_box', 'result_card', 'export', 'confirm')
+        for k in need:
             if k not in caps:
                 log('calib 缺 %s' % k); return False
 
