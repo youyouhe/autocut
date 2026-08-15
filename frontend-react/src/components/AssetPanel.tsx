@@ -46,13 +46,13 @@ export default function AssetPanel({ assets, setAssets, refreshAssets }: Props) 
     return <FileVideo size={size} strokeWidth={1} className="text-[#121212]/40" />;
   };
 
-  const handleAnalyze = async (asset: Asset) => {
+  const handleAnalyze = async (asset: Asset, force = false) => {
     if (asset.type !== 'video') return;
     setSelected(asset.name);
-    if (asset.analysis && !('error' in (asset.analysis as any))) return; // 已有, 仅展示
+    if (!force && asset.analysis && !('error' in (asset.analysis as any))) return; // 已有, 仅展示
     setAnalyzing(asset.name);
     try {
-      const result = await api.perceive(asset.path);
+      const result = await api.perceive(asset.path, { force });
       setAssets(prev => prev.map(a => a.path === asset.path ? { ...a, analysis: result, _cached: result._cached } : a));
     } catch (err: any) {
       setAssets(prev => prev.map(a => a.path === asset.path ? { ...a, analysis: { error: err.message } } : a));
@@ -148,11 +148,19 @@ export default function AssetPanel({ assets, setAssets, refreshAssets }: Props) 
                 </div>
                 <div className="flex gap-2 mt-auto">
                   {asset.type === 'video' && (
-                    <button onClick={() => handleAnalyze(asset)} disabled={analyzing === asset.name}
-                      className="flex-1 px-3 py-2 border border-[#121212]/20 text-[#121212] text-[10px] uppercase tracking-widest font-bold hover:bg-[#121212]/5 transition-colors disabled:opacity-50 flex items-center justify-center gap-1">
-                      {analyzing === asset.name ? <Loader2 size={12} strokeWidth={1.5} className="animate-spin" /> : null}
-                      {asset.analysis && !('error' in (asset.analysis as any)) ? 'View' : 'Analyze'}
-                    </button>
+                    <>
+                      <button onClick={() => handleAnalyze(asset)} disabled={analyzing === asset.name}
+                        className="flex-1 px-3 py-2 border border-[#121212]/20 text-[#121212] text-[10px] uppercase tracking-widest font-bold hover:bg-[#121212]/5 transition-colors disabled:opacity-50 flex items-center justify-center gap-1">
+                        {analyzing === asset.name ? <Loader2 size={12} strokeWidth={1.5} className="animate-spin" /> : null}
+                        {asset.analysis && !('error' in (asset.analysis as any)) ? 'View' : 'Analyze'}
+                      </button>
+                      {asset.analysis && !('error' in (asset.analysis as any)) && (
+                        <button onClick={() => handleAnalyze(asset, true)} disabled={analyzing === asset.name}
+                          className="px-3 py-2 border border-[#121212]/20 text-[#121212] hover:bg-[#121212]/5 transition-colors disabled:opacity-50" title="重新分析 (忽略缓存)">
+                          {analyzing === asset.name ? <Loader2 size={14} strokeWidth={1.5} className="animate-spin" /> : <RefreshCw size={14} strokeWidth={1.5} />}
+                        </button>
+                      )}
+                    </>
                   )}
                   <button onClick={() => setSelected(selected === asset.name ? null : asset.name)}
                     className={`px-3 py-2 border text-[#121212] hover:bg-[#121212]/5 transition-colors ${selected === asset.name ? 'border-[#121212] bg-[#121212]/5' : 'border-[#121212]/20'}`} title="Details">
@@ -178,8 +186,8 @@ export default function AssetPanel({ assets, setAssets, refreshAssets }: Props) 
                   <span>{(analysis as PerceiveResult).meta!.width}×{(analysis as PerceiveResult).meta!.height}</span>
                 )}
                 <span>{((analysis as PerceiveResult).meta?.duration ?? 0).toFixed(1)}s</span>
-                {(analysis as PerceiveResult).scenes?.scene_count != null && (
-                  <span>{(analysis as PerceiveResult).scenes!.scene_count} scenes</span>
+                {(analysis as PerceiveResult).scenes && (analysis as PerceiveResult).scenes!.length > 0 && (
+                  <span>{(analysis as PerceiveResult).scenes!.length} scenes</span>
                 )}
                 {(analysis as PerceiveResult)._cached && <span className="text-amber-700">cached</span>}
               </div>
@@ -190,6 +198,18 @@ export default function AssetPanel({ assets, setAssets, refreshAssets }: Props) 
                 <div>
                   <div className="text-[10px] uppercase tracking-widest opacity-50 mb-1">Transcript</div>
                   <p className="font-light leading-relaxed opacity-80">{audioText}</p>
+                </div>
+              )}
+              {(analysis as PerceiveResult).scenes && (analysis as PerceiveResult).scenes!.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest opacity-50 mb-1">Scene Cuts</div>
+                  <p className="font-mono text-xs opacity-70">{(analysis as PerceiveResult).scenes!.map(t => `${t.toFixed(1)}s`).join(' · ')}</p>
+                </div>
+              )}
+              {(analysis as PerceiveResult).srt && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest opacity-50 mb-1">SRT Subtitles</div>
+                  <pre className="font-mono text-[11px] leading-relaxed bg-[#121212]/5 p-3 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">{(analysis as PerceiveResult).srt}</pre>
                 </div>
               )}
             </div>

@@ -52,9 +52,10 @@ export interface RenderTask {
 
 export interface PerceiveResult {
   meta?: { duration?: number; width?: number; height?: number; fps?: number; source_path?: string };
-  scenes?: { scene_count?: number; scenes?: { scene_index: number; time_sec: number; time_text: string }[] };
+  scenes?: number[];   // 镜头切换时间点 (秒)
   visual_analysis?: string;   // 含 JSON 块
   audio?: { full_text?: string; segments?: any[]; asr_model?: string };
+  srt?: string;   // 标准 SRT 字幕文本
   _cached?: boolean;
   created_at?: string;
   error?: string;
