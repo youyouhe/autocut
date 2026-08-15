@@ -477,18 +477,26 @@ class Driver:
             time.sleep(0.5)
         return False
 
-    def _calib_prompt(self, title, msg):
-        """弹 Windows 提示框引导校准 (阻塞到点确定). 用户无需看日志即可完成校准."""
-        import ctypes
-        MB_OK = 0x0
-        MB_ICONINFORMATION = 0x40
-        MB_SETFOREGROUND = 0x10000
-        ctypes.windll.user32.MessageBoxW(
-            None, msg, title, MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND)
+    def _wait_click_countdown(self, base, name, timeout=600):
+        """等一次 Press 点击 (type==2), 期间每 15s 输出倒计时日志."""
+        start = time.time()
+        last_log = 0.0
+        while time.time() - start < timeout:
+            with self.cond:
+                self.cond.wait(timeout=1.0)
+                if (self.capture_count > base and self.last_capture
+                        and self.last_capture.get('type') == 2):
+                    return self.last_capture
+            elapsed = time.time() - start
+            if elapsed - last_log >= 15:
+                last_log = elapsed
+                log('    >>> 等待点击【%s】: 已等 %ds / 剩余 %ds'
+                    % (name, int(elapsed), int(timeout - elapsed)))
+        return None
 
     def calibrate(self):
-        log('=== 校准模式: 依次点击 5 个位置 (每步 600s, 已捕获的增量保存) ===')
-        log('    (记录 global 坐标 + 当时的 win/dev 指针, 用于 run 时 seed)')
+        log('=== 校准模式: 依次点击 5 个位置 (每步 600s) ===')
+        log('    请跟随日志提示, 依次用鼠标点击剪映中的对应位置。')
         resize_jianying()  # 先固定窗口到预设尺寸, 保证校准坐标与渲染时一致
         time.sleep(2)  # 等剪映按新尺寸重新布局 (草稿卡片位置刷新)
         steps = [
@@ -502,14 +510,9 @@ class Driver:
         # 简短等一次鼠标事件做 dev 种子 (3s, 超时也继续; dev 由 hook 程序化获取)
         self.wait_any_event(timeout=3)
         for i, (key, name, desc) in enumerate(steps):
-            self._calib_prompt(
-                'AutoCut 校准 %d/%d' % (i + 1, len(steps)),
-                '本步请点击剪映中的【%s】\n\n%s\n\n'
-                '点"确定"后剪映会自动弹到前台,\n请用鼠标点击其中的【%s】, 捕获后自动进入下一步。' % (name, desc, name))
-            focus_jianying()  # 拉剪映到前台, 方便用户立即点击
             log('[%d/%d] >>> 请点击【%s】 — %s' % (i + 1, len(steps), name, desc))
             base = self.capture_count
-            cap = self.wait_click_from(base, timeout=600)
+            cap = self._wait_click_countdown(base, name, timeout=600)
             if not cap:
                 log('TIMEOUT: 没捕获到 %s, 退出' % key)
                 if caps:
@@ -526,7 +529,7 @@ class Driver:
                       ensure_ascii=False, indent=2)
             log('  OK 已保存 %s local(%s,%s) global(%s,%s)' %
                 (key, cap.get('lx'), cap.get('ly'), cap.get('gx'), cap.get('gy')))
-            # 等剪映界面切换完成再进入下一步 (否则提示框弹出时剪映还没就绪)
+            # 等剪映界面切换完成再进入下一步
             if key == 'card':
                 time.sleep(5)   # 点草稿后等编辑器打开
             elif key == 'export':
@@ -537,7 +540,6 @@ class Driver:
                 time.sleep(2)   # 等完成窗口关闭
             elif key == 'close_editor':
                 time.sleep(2)   # 等回到首页
-        self._calib_prompt('AutoCut 校准', '校准完成! 坐标已保存到 calib.json。')
         log('CALIB DONE -> %s' % CALIB_FILE)
         return True
 
