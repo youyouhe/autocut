@@ -490,6 +490,7 @@ class Driver:
         log('=== 校准模式: 依次点击 5 个位置 (每步 600s, 已捕获的增量保存) ===')
         log('    (记录 global 坐标 + 当时的 win/dev 指针, 用于 run 时 seed)')
         resize_jianying()  # 先固定窗口到预设尺寸, 保证校准坐标与渲染时一致
+        time.sleep(2)  # 等剪映按新尺寸重新布局 (草稿卡片位置刷新)
         steps = [
             ('card',         '草稿卡片', '首页里你要渲染的那个草稿 (若不在首页先点左上角返回)'),
             ('export',       '导出按钮', '进入编辑器后, 点顶部的"导出"'),
@@ -525,8 +526,17 @@ class Driver:
                       ensure_ascii=False, indent=2)
             log('  OK 已保存 %s local(%s,%s) global(%s,%s)' %
                 (key, cap.get('lx'), cap.get('ly'), cap.get('gx'), cap.get('gy')))
-            if key == 'confirm':
-                self.wait_render_done(timeout=600)
+            # 等剪映界面切换完成再进入下一步 (否则提示框弹出时剪映还没就绪)
+            if key == 'card':
+                time.sleep(5)   # 点草稿后等编辑器打开
+            elif key == 'export':
+                time.sleep(3)   # 点导出后等导出窗口弹出
+            elif key == 'confirm':
+                self.wait_render_done(timeout=600)  # 等渲染完成
+            elif key == 'close_done':
+                time.sleep(2)   # 等完成窗口关闭
+            elif key == 'close_editor':
+                time.sleep(2)   # 等回到首页
         self._calib_prompt('AutoCut 校准', '校准完成! 坐标已保存到 calib.json。')
         log('CALIB DONE -> %s' % CALIB_FILE)
         return True
