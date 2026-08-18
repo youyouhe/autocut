@@ -9,6 +9,19 @@ import frida, time, json, os, sys, threading, subprocess
 try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
 
+# 关键: 声明本进程 per-monitor DPI aware, 否则在高 DPI 缩放(如150%)下
+# GetWindowRect/MoveWindow 拿到的是被系统虚拟化缩放过的坐标, 跟剪映(真 DPI aware 的 Qt 应用)
+# 内部真实物理像素坐标系不一致 —— resize 看起来"成功"但实际物理窗口尺寸是被缩放过的,
+# 导致 hook 捕获的点击坐标跟我们以为的窗口尺寸完全不对应(实测偏差正好是缩放比例, 如150%).
+try:
+    import ctypes
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
 import config
 
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -55,13 +68,37 @@ def inject_draft(src_draft_dir, new_name=None):
         m['tm_draft_modified'] = now_us
         m['tm_draft_create'] = now_us
         json.dump(m, open(mp, 'w', encoding='utf-8'), ensure_ascii=False)
-    # 改 draft_content.json 的 id
+    # 改 draft_content.json 的 id + 修正素材绝对路径
     cp = os.path.join(dst, 'draft_content.json')
     if os.path.exists(cp):
         c = json.load(open(cp, encoding='utf-8'))
         if isinstance(c, dict) and 'id' in c:
             c['id'] = new_id
-            json.dump(c, open(cp, 'w', encoding='utf-8'), ensure_ascii=False)
+        # 关键修复: 剪映导出时, 若视频素材 path/media_path 为空(无法解析素材文件),
+        # 会静默中止导出 —— 点了"导出"确认后弹窗关闭但渲染引擎根本不启动(temp_bytes 全程 0).
+        # 源草稿(如 testrd1)的素材路径往往为空(由 copy_draft_external 创建时被抹掉),
+        # 但素材文件本身存在于草稿的 assets/video/ 子目录. 这里把每个 video/audi 素材的
+        # path 改写为新草稿里该文件的绝对路径(正斜杠, 与剪映自身格式一致), 让导出能定位素材.
+        mats = c.get('materials', {}) if isinstance(c, dict) else {}
+        for mkey in ('videos', 'audios'):
+            for mat in mats.get(mkey, []) or []:
+                mname = mat.get('material_name')
+                if not mname:
+                    continue
+                # 若已有有效绝对路径且文件存在, 不动它
+                cur = mat.get('path') or mat.get('media_path') or ''
+                if cur and os.path.isfile(cur.replace('/', os.sep)):
+                    continue
+                # 尝试 assets/video 与 assets/audio 子目录
+                for sub in ('video', 'audio'):
+                    cand = os.path.join(new_fold, 'assets', sub, mname)
+                    if os.path.isfile(cand):
+                        fwd = cand.replace('\\', '/')
+                        mat['path'] = fwd
+                        if not mat.get('media_path'):
+                            mat['media_path'] = fwd
+                        break
+        json.dump(c, open(cp, 'w', encoding='utf-8'), ensure_ascii=False)
     log('注入草稿: %s -> %s (id=%s)' % (src_name, new_name, new_id))
     return dst
 
@@ -76,16 +113,92 @@ def find_main_pid():
     out = r.stdout.strip()
     return int(out) if out.isdigit() else None
 
+CURRENT_HDESK = None  # 桌面模式下, start_jianying_in_desktop() 拿到的目标桌面句柄 (供跨桌面操作用)
+
+import contextlib
+
+@contextlib.contextmanager
+def _on_target_desktop():
+    """桌面模式下, 把本线程临时切到目标桌面, 让 EnumWindows/GetWindowRect/MoveWindow 等
+    User32 调用作用到隔离桌面里的真实窗口上 (这些调用默认只认本线程当前关联的桌面);
+    用完切回原桌面, 不影响本线程后续其它操作(如键鼠模拟)."""
+    import ctypes
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    if not (DESKTOP_MODE and CURRENT_HDESK):
+        yield False
+        return
+    orig_hdesk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+    if not user32.SetThreadDesktop(CURRENT_HDESK):
+        log('  SetThreadDesktop 失败 err=%d, 跳过跨桌面窗口操作' % ctypes.get_last_error())
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        if orig_hdesk:
+            user32.SetThreadDesktop(orig_hdesk)
+
+def _real_click_global(gx, gy):
+    """真实 OS 级点击 (SetCursorPos + mouse_event), 走完整 Windows 输入管线, 跟人工鼠标点击
+    完全一致. 用于替代 frida 注入的 Qt handleMouseEvent 直调——实测直调对"导出确认"这类弹窗按钮
+    能返回成功但压根不触发按钮的业务逻辑(可能是该弹窗内部还依赖了原生输入管线才会更新的状态),
+    只有真实输入事件才能可靠触发. 桌面模式下会切到目标桌面操作, 不影响用户主桌面的鼠标.
+    注意: 实测在隔离(非输入)桌面下, SetCursorPos/mouse_event 这类全局硬件输入模拟 API 即使
+    SetThreadDesktop 切过去也不会真正送达该桌面上的窗口(这类 API 绑定的是当前"输入桌面",
+    不是调用线程关联的桌面) —— 弹窗按钮请改用 _post_click_hwnd() (直接 PostMessage 到 HWND,
+    不经过全局输入队列, 隔离桌面下也可靠)."""
+    import ctypes
+    MOUSEEVENTF_LEFTDOWN = 0x0002
+    MOUSEEVENTF_LEFTUP = 0x0004
+    user32 = ctypes.windll.user32
+    with _on_target_desktop():
+        user32.SetCursorPos(int(gx), int(gy))
+        time.sleep(0.1)
+        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.08)
+        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    return True
+
+def _post_click_hwnd(hwnd, lx, ly):
+    """对指定 HWND 直接 PostMessage WM_MOUSEMOVE + WM_LBUTTONDOWN/UP (client 坐标, 物理像素).
+    实测这是隔离桌面下唯一可靠触发 QtQuick 弹窗按钮业务逻辑的方式: frida 直调
+    handleMouseEvent 对弹窗(非主窗口)的按钮不生效(不管坐标/焦点是否正确都无效), 全局
+    SetCursorPos+mouse_event 在非输入桌面下也不会真正送达 —— 只有直接 PostMessage 到该
+    HWND 的消息队列(不经过桌面级输入管线, 只要 HWND 有效就能送达)才行. lx,ly 是 Qt 逻辑
+    坐标(相对窗口左上角), 内部按 GetDpiForWindow 换算成物理像素再发送."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    WM_MOUSEMOVE = 0x0200
+    WM_LBUTTONDOWN = 0x0201
+    WM_LBUTTONUP = 0x0202
+    MK_LBUTTON = 0x0001
+
+    def make_lparam(x, y):
+        return (int(y) & 0xffff) << 16 | (int(x) & 0xffff)
+
+    with _on_target_desktop():
+        try:
+            dpi = user32.GetDpiForWindow(hwnd)
+            scale = dpi / 96.0 if dpi else 1.0
+        except Exception:
+            scale = 1.0
+        px, py = lx * scale, ly * scale
+        lparam = make_lparam(px, py)
+        user32.PostMessageW(hwnd, WM_MOUSEMOVE, 0, lparam)
+        time.sleep(0.05)
+        user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
+        time.sleep(0.08)
+        user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
+    return {'ok': True, 'scale': scale, 'physical': {'x': px, 'y': py}}
+
 def find_jy_hwnd():
-    """找最大可见剪映窗口 HWND. 桌面模式下按 PID 找 (跨桌面 EnumWindows 找不到标题)."""
+    """找最大可见剪映窗口 HWND. 假定调用方已经(如需要)切到正确桌面 (见 _on_target_desktop)."""
     import ctypes
     from ctypes import wintypes
     user32 = ctypes.windll.user32
     all_h = []
-    if DESKTOP_MODE and getattr(find_jy_hwnd, '_pid', None):
-        # 按 PID 找 (桌面模式, EnumWindows 不跨桌面, 用 EnumThreadWindows 替代不行; 改用 ProcessId 过滤也不跨桌面)
-        # 实际: 桌面模式下 HWND 操作本就受限, 这里返回 None, resize/type 用别的机制
-        return None
     def cb(h, _):
         if user32.IsWindowVisible(h):
             buf = ctypes.create_unicode_buffer(256)
@@ -101,7 +214,10 @@ def find_jy_hwnd():
 
 # === 独立桌面模式 (真后台) ===
 DESKTOP_MODE = False
-JY_DESKTOP = 'JYRender'
+# 实际桌面名 (config.DESKTOP_NAMES 默认 'JYRender_0'; OpenDesktop/CreateDesktop 用此名).
+# 之前误写 'JYRender', 但系统上真实存在的桌面是 'JYRender_0', 导致 OpenDesktop 失败回退到
+# CreateDesktop 新建一个空 'JYRender' 桌面, 与 render_server 用的 'JYRender_0' 不一致.
+JY_DESKTOP = 'JYRender_0'
 
 def start_jianying_in_desktop(desktop=JY_DESKTOP):
     """在独立桌面启动剪映, 返回 (pid, hDesk). 剪映在该桌面是前台, focusWindow 有效, 主桌面不被打扰."""
@@ -170,24 +286,56 @@ def focus_jianying():
     time.sleep(0.4)
     return hwnd
 
+def _activate_hwnd(hwnd):
+    """把指定 HWND 拉到前台/激活 (桌面模式下临时切到目标桌面操作, 见 _on_target_desktop).
+    新弹出的弹窗(如导出确认框)从未被 SetForegroundWindow 激活过, focusWindow() 一直是 null,
+    导致真实点击第一下只是把窗口"点活"而不触发按钮逻辑(Windows 单击非激活窗口的经典问题),
+    必须显式激活它一次再点."""
+    import ctypes
+    user32 = ctypes.windll.user32
+    with _on_target_desktop():
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        user32.keybd_event(0x12, 0, 0, 0)
+        user32.keybd_event(0x12, 0, 0x0002, 0)
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.15)
+
 # 预设窗口尺寸 (校准坐标时用的尺寸; resize 到此尺寸保证坐标准)
 PRESET_W, PRESET_H = config.PRESET_W, config.PRESET_H
 
 def resize_jianying(w=PRESET_W, h=PRESET_H):
-    """把剪映主窗口 resize 成预设尺寸 (坐标基于此尺寸). 返回 hwnd 或 None."""
+    """把剪映窗口(首页或编辑器, 无论当前是否最大化)强制 resize 成固定预设尺寸,
+    保证不同机器/分辨率/缩放下, 校准坐标和渲染时坐标始终对得上.
+    桌面模式下会临时切到目标桌面操作(见 _on_target_desktop), 保证隔离桌面里的窗口也生效. 返回 hwnd 或 None."""
     import ctypes
     from ctypes import wintypes
+    SW_RESTORE = 9
     user32 = ctypes.windll.user32
-    hwnd = find_jy_hwnd()
-    if not hwnd: return None
-    r = wintypes.RECT(); user32.GetWindowRect(hwnd, ctypes.byref(r))
-    cur_w, cur_h = r.right - r.left, r.bottom - r.top
-    if cur_w == w and cur_h == h:
-        return hwnd  # 已是预设尺寸
-    # MoveWindow(hwnd, x, y, w, h, repaint) — 保持左上角位置, 改尺寸
-    user32.MoveWindow(hwnd, r.left, r.top, w, h, True)
-    time.sleep(0.5)
-    log('resize 剪映窗口: %dx%d -> %dx%d' % (cur_w, cur_h, w, h))
+    with _on_target_desktop():
+        hwnd = find_jy_hwnd()
+        if not hwnd: return None
+        if user32.IsZoomed(hwnd) or user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)  # 先取消最大化/最小化, 否则 MoveWindow 不生效或被弹回
+            time.sleep(0.3)
+        r = wintypes.RECT(); user32.GetWindowRect(hwnd, ctypes.byref(r))
+        cur_w, cur_h = r.right - r.left, r.bottom - r.top
+        # 固定锚点到主屏 (0,0): 不保留原左上角位置 —— 之前 MoveWindow 保持 r.left/r.top,
+        # 导致窗口每次打开落点不同 (甚至落到不同显示器/不同 DPI 缩放), 使校准的绝对全局
+        # 坐标(gx,gy)在下次运行时整体偏移/失效. 固定锚点后窗口位置+尺寸每次都完全一致.
+        if cur_w == w and cur_h == h and r.left == 0 and r.top == 0:
+            return hwnd  # 已是预设尺寸+位置
+        user32.MoveWindow(hwnd, 0, 0, w, h, True)
+        time.sleep(0.5)
+        log('resize 剪映窗口: (%d,%d)%dx%d -> (0,0)%dx%d' % (r.left, r.top, cur_w, cur_h, w, h))
+        return hwnd
+
+def resize_jianying_settled(w=PRESET_W, h=PRESET_H, attempts=6, interval=0.5):
+    """编辑器刚打开时有些版本会延迟自我最大化/重新布局, 一次性 resize 可能被之后的
+    自动最大化覆盖掉. 短时间内反复拉回固定尺寸, 直到真正稳定在预设尺寸再继续."""
+    hwnd = None
+    for _ in range(attempts):
+        hwnd = resize_jianying(w, h)
+        time.sleep(interval)
     return hwnd
 
 def kill_jianying(pid=None):
@@ -308,12 +456,129 @@ class Driver:
         log('  click(%.0f,%.0f) -> %s' % (gx, gy, r))
         return r
 
-    def click_modal(self, lx, ly):
-        """用最近显示的窗口 (modal) 点击 — 解决 confirm/close_done 在 modal 窗口的问题."""
+    def click_card_by_name(self, draft_name):
+        """按草稿名在首页草稿网格里定位该草稿的卡片并 PostMessage 点击其中心, 打开该草稿.
+        取代旧的固定 caps['card'] 像素坐标: inject_draft 把新草稿设为 tm_draft_create=now 排到
+        首页第一张卡片, 但 caps['card'] 是早期对别的草稿布局校准的固定坐标, 会落到别的旧草稿
+        (其视频素材 path 被清空 → 10006 "导出文件缺失"). 改成每次按 draft_name 在首页
+        QQuickItem 树里找 QQuickText==draft_name 的文字节点, 取其卡片可点击祖先(MouseArea 90x90)
+        几何 + 首页 HWND, 再 _post_click_hwnd 点中心 —— 跟 click_modal_button 同一套机制, 只是
+        在首页大窗口(而非 lastShownWin 弹窗)里找. 返回 {ok, via, btn}."""
+        btn = None
+        for attempt in range(20):
+            btn = self.script.exports_sync.findcard(draft_name)
+            if isinstance(btn, dict) and btn.get('ok'):
+                break
+            time.sleep(0.5)
+        if isinstance(btn, dict) and btn.get('ok'):
+            hwnd = int(btn['hwnd'], 16)
+            try:
+                _activate_hwnd(hwnd)
+            except Exception as e:
+                log('  激活首页 hwnd 失败: %s' % e)
+            lx, ly = btn['ax'] + btn['w'] / 2, btn['ay'] + btn['h'] / 2
+            r = _post_click_hwnd(hwnd, lx, ly)
+            log('  findcard(%s) -> btn=%s post click(local=%.0f,%.0f)=%s' %
+                (draft_name, {'cls': btn.get('cls'), 'ax': btn['ax'], 'ay': btn['ay'], 'w': btn['w'], 'h': btn['h']}, lx, ly, r))
+            return {'ok': True, 'via': 'findcard', 'btn': btn}
+        log('  findcard(%s) 未找到: %s' % (draft_name, btn if isinstance(btn, dict) else btn))
+        return {'ok': False, 'err': (btn.get('err') if isinstance(btn, dict) else None) or 'card not found by name'}
+
+    def click_modal_button(self, want_texts, fallback_lx=None, fallback_ly=None):
+        """按弹窗(lastShownWin)里按钮的文字精确定位并点击, 取代 calib.json 里固定像素坐标.
+        原理: hook 侧用 Qt 内部 API 遍历弹窗的 QQuickItem 树(contentItem/childItems/文字),
+        按 want_texts(候选文字列表, 如 ['导出']) 找到真实按钮几何位置(每次都重新定位, 不怕
+        坐标漂移/DPI变化/弹窗布局变化), 再对该弹窗 HWND 直接 PostMessage 点击 —— 实测这是
+        隔离桌面下唯一能触发这类弹窗按钮业务逻辑的方式(frida 直调 handleMouseEvent 对弹窗
+        按钮不生效; SetCursorPos+mouse_event 这类全局输入模拟在非输入桌面下也送不到).
+        找不到按钮时回退到 fallback_lx/fallback_ly (calib.json 里的旧坐标, 走真实 OS 点击).
+        弹窗刚弹出的一小段时间里内容面板可能还没完全加载(实测会先出现一个精简/加载中的版本,
+        按钮文字还不存在), 所以按文字找不到时先重试几次再回退, 避免过早误判成"没有这个按钮"."""
         focus_jianying()
-        r = self.script.exports_sync.clickmodal(float(lx), float(ly))
-        log('  clickmodal(%.0f,%.0f) -> %s' % (lx, ly, r))
-        return r
+        btn = None
+        for attempt in range(20):
+            btn = self.script.exports_sync.findmodalbutton(json.dumps(want_texts, ensure_ascii=False))
+            if btn.get('ok'):
+                break
+            time.sleep(0.5)
+        if btn.get('ok'):
+            hwnd = int(btn['hwnd'], 16)
+            # 必须先激活弹窗再 PostMessage 点击: 新弹出的导出确认框从未被
+            # SetForegroundWindow 激活过(focusWindow() 一直是 null), 直接 PostMessage
+            # 的第一下只是把窗口"点活"而不触发按钮逻辑(Windows 单击非激活窗口的经典问题),
+            # 表现为按钮坐标正确但 temp_bytes 永远是 0(渲染不启动). 见 _activate_hwnd 注释.
+            try:
+                _activate_hwnd(hwnd)
+            except Exception as e:
+                log('  激活弹窗 hwnd 失败: %s' % e)
+            lx, ly = btn['ax'] + btn['w'] / 2, btn['ay'] + btn['h'] / 2
+            r = _post_click_hwnd(hwnd, lx, ly)
+            log('  findmodalbutton%s -> btn=%s post click(local=%.0f,%.0f)=%s' %
+                (want_texts, {'cls': btn.get('cls'), 'ax': btn['ax'], 'ay': btn['ay'], 'w': btn['w'], 'h': btn['h']}, lx, ly, r))
+            return {'ok': True, 'via': 'findmodalbutton', 'btn': btn}
+        log('  findmodalbutton%s 未找到: %s' % (want_texts, btn.get('err')))
+        if fallback_lx is None or fallback_ly is None:
+            return {'ok': False, 'err': btn.get('err', 'button not found, no fallback coords')}
+        log('  回退到固定坐标 local(%.0f,%.0f)' % (fallback_lx, fallback_ly))
+        return self.click_modal(fallback_lx, fallback_ly)
+
+    def click_main_button(self, want_texts, fallback_lx=None, fallback_ly=None):
+        """按主窗口(编辑器/首页, 跟 findmodalbutton 特意排除的那类同尺寸)工具栏按钮的文字定位并点击.
+        原因: 实测 frida 注入的 click()(handleMouseEvent 直调)对"点击后会打开新弹窗"这类操作
+        (比如导出按钮打开导出确认框)不总可靠——有时返回成功但弹窗压根没出现(概率性失败,
+        跟确认框按钮当初的问题同源). 改成跟弹窗按钮一样的方案: 按文字动态定位坐标, 再用
+        PostMessage 直接点该窗口 HWND, 不经过 frida 注入的 Qt 事件管线, 更稳定.
+        找不到按钮时回退到 fallback_lx/fallback_ly (calib.json 里的旧坐标, 走 frida click())."""
+        focus_jianying()
+        btn = None
+        for attempt in range(20):
+            btn = self.script.exports_sync.findmainbutton(json.dumps(want_texts, ensure_ascii=False))
+            if btn.get('ok'):
+                break
+            time.sleep(0.5)
+        if btn.get('ok'):
+            hwnd = int(btn['hwnd'], 16)
+            # 先激活目标窗口再 PostMessage 点击 (与 click_modal_button 同理, 见 _activate_hwnd 注释).
+            # 尤其点击工具栏导出按钮要打开新弹窗, 窗口若未被激活过, 点击只"点活"不触发逻辑.
+            try:
+                _activate_hwnd(hwnd)
+            except Exception as e:
+                log('  激活主窗口 hwnd 失败: %s' % e)
+            lx, ly = btn['ax'] + btn['w'] / 2, btn['ay'] + btn['h'] / 2
+            r = _post_click_hwnd(hwnd, lx, ly)
+            log('  findmainbutton%s -> btn=%s post click(local=%.0f,%.0f)=%s' %
+                (want_texts, {'cls': btn.get('cls'), 'ax': btn['ax'], 'ay': btn['ay'], 'w': btn['w'], 'h': btn['h']}, lx, ly, r))
+            return {'ok': True, 'via': 'findmainbutton', 'btn': btn}
+        log('  findmainbutton%s 未找到: %s' % (want_texts, btn.get('err')))
+        if fallback_lx is None or fallback_ly is None:
+            return {'ok': False, 'err': btn.get('err', 'button not found, no fallback coords')}
+        log('  回退到固定坐标 local(%.0f,%.0f) (frida click)' % (fallback_lx, fallback_ly))
+        return self.click_global2(fallback_lx, fallback_ly)
+
+    def click_modal(self, lx, ly):
+        """confirm/close_done 在弹窗(modal)上, 用真实 OS 级点击 (_real_click_global):
+        先问 hook 弹窗当前原点(modalorigin, 只读不点), 再用真实坐标做 SetCursorPos+mouse_event.
+        已知问题: 这条路径在隔离(非输入)桌面下不可靠(SetCursorPos/mouse_event 这类全局输入
+        模拟 API 不会真正送达非输入桌面上的窗口), 仅作为 click_modal_button() 找不到按钮时
+        的回退, 优先用 click_modal_button() (按文字用 Qt 内部 API 定位 + PostMessage 到 HWND)."""
+        focus_jianying()
+        origin = self.script.exports_sync.modalorigin()
+        if not origin.get('ok'):
+            log('  modalorigin 失败: %s' % origin.get('err'))
+            return {'ok': False, 'err': origin.get('err', 'no modal window')}
+        hw = self.script.exports_sync.modalhwnd()
+        if hw.get('ok'):
+            try:
+                _activate_hwnd(int(hw['hwnd'], 16))
+            except Exception as e:
+                log('  激活弹窗 hwnd 失败: %s' % e)
+        else:
+            log('  modalhwnd 失败: %s' % hw.get('err'))
+        gx, gy = origin['x'] + lx, origin['y'] + ly
+        _real_click_global(gx, gy)
+        log('  realclick(local=%.0f,%.0f origin=%s -> global=%.0f,%.0f)' % (lx, ly, origin, gx, gy))
+        return {'ok': True, 'global': {'x': gx, 'y': gy}, 'win': origin.get('win')}
+
 
     def type_text(self, text):
         """键盘输入. 桌面模式: hook 内 PostMessage (typewm); 普通模式: Win32 PostMessage."""
@@ -533,6 +798,7 @@ class Driver:
             # 等剪映界面切换完成再进入下一步
             if key == 'card':
                 time.sleep(5)   # 点草稿后等编辑器打开
+                resize_jianying_settled()  # 编辑器常默认最大化打开(有些还会延迟自我最大化), 反复拉回固定尺寸再继续
             elif key == 'export':
                 time.sleep(3)   # 点导出后等导出窗口弹出
             elif key == 'confirm':
@@ -562,15 +828,16 @@ class Driver:
             log('--- 第 %d/%d 个 ---' % (i + 1, count))
             log('点草稿卡片'); self.click_global2(caps['card']['lx'], caps['card']['ly'])
             time.sleep(6)
-            log('点导出按钮'); self.click_global2(caps['export']['lx'], caps['export']['ly'])
+            resize_jianying_settled()  # 编辑器常默认最大化打开(有些还会延迟自我最大化), 反复拉回固定尺寸再继续
+            log('点导出按钮'); self.click_main_button(['导出'], caps['export']['lx'], caps['export']['ly'])
             time.sleep(3)
-            log('点确认按钮'); self.click_global2(caps['confirm']['lx'], caps['confirm']['ly'])
+            log('点确认按钮(modal)'); self.click_modal_button(['导出'], caps['confirm']['lx'], caps['confirm']['ly'])
             if not self.wait_render_done(timeout=300):
                 log('渲染未完成, 中止'); break
             time.sleep(2)
             # 关闭完成提示 + 关编辑器回首页 (连续渲染下一个需要)
             if 'close_done' in caps:
-                log('点关闭完成提示'); self.click_global2(caps['close_done']['lx'], caps['close_done']['ly'])
+                log('点关闭完成提示(modal)'); self.click_modal_button(['完成', '关闭', '确定'], caps['close_done']['lx'], caps['close_done']['ly'])
                 time.sleep(1)
             if 'close_editor' in caps:
                 log('点关闭编辑器(回首页)'); self.click_global2(caps['close_editor']['lx'], caps['close_editor']['ly'])
@@ -618,19 +885,29 @@ class Driver:
         if not st.get('curDev'):
             log('dev 未获取, 中止'); return False
 
-        # 2. 打开草稿: 桌面模式直接点首页第一(注入草稿排第一), 前台模式用搜索
+        # 2. 打开草稿: 桌面模式按草稿名在首页网格里定位卡片点击(不再用固定 caps['card'] 坐标),
+        # 前台模式用搜索
         if DESKTOP_MODE:
-            # 桌面模式: 点 card, 等编辑器就绪, 没就绪重试 (首页加载时序不稳定)
+            # 桌面模式: 按草稿名(draft_name)在首页 QQuickItem 树里找该草稿的卡片, 取其 MouseArea
+            # 几何 + 首页 HWND, _activate_hwnd 后 _post_click_hwnd 点卡片中心. 这取代了旧的固定
+            # caps['card'] 像素坐标 —— 那个坐标是早期对别的草稿布局校准的, inject_draft 让新草稿
+            # 排到首页第一张卡片后, 旧坐标会落到别的旧草稿(视频 path 被清空 → 10006 缺失文件),
+            # 每次打开的都是错草稿. 按名定位确保打开的就是刚注入的草稿. findcard 不经过 frida
+            # 注入的点击管线(只读树), _post_click_hwnd 直接 PostMessage 到 HWND, 不会摧毁 session.
             opened = False
-            for card_attempt in range(5):
+            for card_attempt in range(8):
                 base_show = self.get_shown_count()
-                log('点草稿卡片(尝试%d)' % (card_attempt + 1))
-                self.click_global2(caps['card']['lx'], caps['card']['ly'])
-                if self.wait_editor_ready(base_show, timeout=15):
+                log('点草稿卡片(尝试%d) — findcard 按名定位 %s' % (card_attempt + 1, draft_name))
+                res = self.click_card_by_name(draft_name)
+                if not res.get('ok'):
+                    log('  findcard 失败: %s' % res.get('err'))
+                    time.sleep(1); continue
+                if self.wait_editor_ready(base_show, timeout=12):
                     opened = True; break
                 log('  草稿未打开, 重试')
+                time.sleep(1)
             if not opened:
-                log('草稿卡片5次未打开, 中止'); return False
+                log('草稿卡片8次未打开, 中止'); return False
         else:
             log('点放大镜'); self.click_global2(caps['search_btn']['lx'], caps['search_btn']['ly'])
             time.sleep(1)
@@ -641,6 +918,7 @@ class Driver:
             log('点结果卡片'); self.click_global2(caps['result_card']['lx'], caps['result_card']['ly'])
             base_show = self.get_shown_count()
             self.wait_editor_ready(base_show, timeout=30)
+        resize_jianying_settled()  # 编辑器常默认最大化打开(有些还会延迟自我最大化), 反复拉回固定尺寸再继续 (桌面模式下 hwnd 找不到, 是 no-op)
         emit_progress('open', 30)
         time.sleep(1)
 
@@ -649,7 +927,7 @@ class Driver:
         for attempt in range(4):
             base_show = self.get_shown_count()
             log('点导出按钮 (尝试%d)' % (attempt + 1))
-            self.click_global2(caps['export']['lx'], caps['export']['ly'])
+            self.click_main_button(['导出'], caps['export']['lx'], caps['export']['ly'])
             new_show = self.wait_new_window(base_show, timeout=8)
             if new_show:
                 log('  ✓ 导出窗口出现 (showCount %d->%d)' % (base_show, new_show))
@@ -661,7 +939,7 @@ class Driver:
             # confirm 在 modal (lastShownWin = 最近显示的 = 导出窗口)
             st = self.script.exports_sync.lastshown()
             log('  modal win=%s (showCount=%d)' % (st.get('win'), st.get('showCount')))
-            log('点确认按钮(modal)'); self.click_modal(caps['confirm']['lx'], caps['confirm']['ly'])
+            log('点确认按钮(modal)'); self.click_modal_button(['导出'], caps['confirm']['lx'], caps['confirm']['ly'])
             emit_progress('confirm', 60)
             # 短等看 mp4 是否开始生成 (20s)
             if self.wait_render_done(draft_name, timeout=20):
@@ -679,7 +957,7 @@ class Driver:
             if new_show:
                 log('  ✓ 完成窗口出现 (showCount %d->%d)' % (base_show, new_show))
             time.sleep(1)
-            log('点关闭完成提示(modal)'); self.click_modal(caps['close_done']['lx'], caps['close_done']['ly'])
+            log('点关闭完成提示(modal)'); self.click_modal_button(['完成', '关闭', '确定'], caps['close_done']['lx'], caps['close_done']['ly'])
             time.sleep(1.5)
         if ok and 'close_editor' in caps:
             log('点关闭编辑器(回首页)'); self.click_global2(caps['close_editor']['lx'], caps['close_editor']['ly'])
@@ -708,7 +986,7 @@ class Driver:
         return ok
 
 def main():
-    global DESKTOP_MODE
+    global DESKTOP_MODE, CURRENT_HDESK
     mode = sys.argv[1] if len(sys.argv) > 1 else 'calibrate'
     close_after = '--close' in sys.argv
     desktop_mode = '--desktop' in sys.argv
@@ -736,16 +1014,23 @@ def main():
             if not attach_pid:
                 log('桌面启动剪映失败, 中止'); sys.exit(1)
             self_started_pid = attach_pid  # 记录, 渲染完 kill
+            CURRENT_HDESK = hDesk  # 供 resize_jianying 跨桌面操作窗口用
             log('等剪映首页加载 30s...')
             time.sleep(30)
         else:
             log('桌面模式 attach 预启动剪映 PID=%d' % attach_pid)
 
     d = Driver()
-    if not d.attach(pid=attach_pid):
-        sys.exit(1)
-    d.start_monitor()
     try:
+        try:
+            if not d.attach(pid=attach_pid):
+                sys.exit(1)
+        except Exception as e:
+            # attach 失败(如 frida VirtualAllocEx 报错)必须走到 finally 清理自己启动的剪映,
+            # 否则孤儿进程占着桌面/单实例锁, 下一次渲染会因为"重复实例"而必然再失败一次.
+            log('attach 剪映失败: %r' % e)
+            sys.exit(1)
+        d.start_monitor()
         if mode == 'calibrate':
             ok = d.calibrate()
             sys.exit(0 if ok else 2)
@@ -766,7 +1051,18 @@ def main():
             sys.exit(0 if ok else 2)
         elif mode == 'render-draft':
             # 渲染指定草稿: 注入 + 搜索 + 打开 + 导出
-            args = [a for a in sys.argv[2:] if not a.startswith('--')]  # 过滤 --desktop/--close
+            # 过滤掉 -- 开头的开关及其紧跟的值 (--desktop-name <值> 等), 只留位置参数.
+            raw = sys.argv[2:]
+            value_opts = ('--desktop-name', '--pid')  # 这些开关后面跟一个值, 需连值一起跳过
+            args = []
+            i = 0
+            while i < len(raw):
+                a = raw[i]
+                if a in value_opts:
+                    i += 2; continue           # 跳过开关 + 它的值
+                if a.startswith('--'):
+                    i += 1; continue            # 跳过无值开关
+                args.append(a); i += 1
             if not args:
                 log('用法: render-draft <草稿文件夹路径> [搜索名]'); sys.exit(2)
             src = args[0]
