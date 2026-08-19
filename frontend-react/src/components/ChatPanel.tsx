@@ -27,6 +27,7 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
   // 用户是否"贴着底部" (距底 <80px). 流式输出时若用户主动上翻看历史, 不强制拉回底部,
   // 只有本来就贴底(或刚发新消息)才自动跟随 —— 标准聊天面板行为.
   const stickToBottom = useRef(true);
+  const lastScrollTop = useRef(0);
   const didInit = useRef(false);
 
   const scrollToBottom = () => {
@@ -39,7 +40,16 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
   const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    // 方向感知: 只有"scrollTop 明显变小"(用户真实上翻)才取消跟随.
+    // 不能只看距底距离 —— smooth 自动滚动动画进行中触发的事件距离底部 >80px,
+    // 若据此取消贴底标记, 流式输出后续内容就永远不再跟随了 (上一版的竞态 bug).
+    const goingUp = el.scrollTop < lastScrollTop.current - 4;
+    lastScrollTop.current = el.scrollTop;
+    if (goingUp) {
+      stickToBottom.current = false;
+    } else if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
+      stickToBottom.current = true;
+    }
   };
   // 依赖"条数 + 最后一条内容长度 + typing 状态": 覆盖 新消息追加 / 流式文本增长 /
   // tool 卡片插入 / 加载指示出现消失. 只依赖数组身份会漏掉原地改内容的场景.
@@ -59,6 +69,9 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
     try {
       const conv = await api.getConversation(id);
       setConversationId(conv.id);
+      // 切换会话: 内容整体替换, 强制回到贴底状态 (新内容把 scrollTop 归零会误判成"上翻")
+      stickToBottom.current = true;
+      lastScrollTop.current = 0;
       setMessages(conv.messages.length ? conv.messages : [GREETING]);
       setDraftId(conv.draft_id ?? null);
     } catch (err) {
