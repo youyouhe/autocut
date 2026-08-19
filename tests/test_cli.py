@@ -35,7 +35,7 @@ def _make_client(monkeypatch, responses):
             self.calls.append(('DELETE', url, kw))
             return FakeResp(self.responses.pop(0))
 
-    client = ApiClient(base_url='http://x:9002')
+    client = ApiClient(base_url='http://x:9010')
     client.session = FakeSession()
     return client, client.session
 

@@ -58,10 +58,10 @@
 │                         用户 / 外部 Agent                           │
 │   (浏览器 Web GUI)   (Claude Code 等 MCP 客户端)   (curl/脚本)      │
 └──────────┬──────────────────────┬──────────────────────┬───────────┘
-           │ HTTP (port 9002)     │ MCP stdio            │
+           │ HTTP (port 9010)     │ MCP stdio            │
            ▼                      ▼                      ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  render_server.py  (Flask, 0.0.0.0:9002)                              │
+│  render_server.py  (Flask, 0.0.0.0:9010)                              │
 │  ┌────────────┐ ┌──────────────┐ ┌────────────┐ ┌─────────────────┐  │
 │  │ 渲染端点   │ │ 前端 API     │ │ 感知端点   │ │ LocalSend 端点  │  │
 │  │ /render*   │ │ /api/perceive│ │ /perceive/*│ │ /api/localsend/*│  │
@@ -149,15 +149,15 @@
 serve.bat
 ```
 - 用 `pythonw.exe` 后台启动 `render_server.py`(无控制台窗口)
-- 检测端口 9002 是否已占用,避免重复启动
+- 检测端口 9010 是否已占用,避免重复启动
 - 写入 `serve.pid` 供 `stop.bat` 使用
-- 启动后访问 **http://localhost:9002**
+- 启动后访问 **http://localhost:9010**
 
 ### 4.2 停止
 ```bat
 stop.bat
 ```
-- 优先按 `serve.pid` 杀进程;若无 PID 则按端口 9002 反查杀
+- 优先按 `serve.pid` 杀进程;若无 PID 则按端口 9010 反查杀
 
 ### 4.3 前台调试启动
 ```bat
@@ -170,7 +170,7 @@ python render_server.py
 ```bat
 cd frontend
 npm install
-npm run dev      # Vite 开发服务器 (5173), 代理到 9002
+npm run dev      # Vite 开发服务器 (5173), 代理到 9010
 npm run build    # 构建到 static/ 供 Flask 托管
 ```
 
@@ -181,7 +181,7 @@ npm run build    # 构建到 static/ 供 Flask 托管
 
 ## 5. 核心服务:render_server.py
 
-**Flask 单进程单端口(9002)统一服务**,融合 VectCutAPI 编辑端点 + 自研渲染/感知/LocalSend 端点。
+**Flask 单进程单端口(9010)统一服务**,融合 VectCutAPI 编辑端点 + 自研渲染/感知/LocalSend 端点。
 
 ### 5.1 融合机制
 ```python
@@ -542,7 +542,7 @@ python template_engine.py render -t templates/xxx.yaml -v '{"k":"v"}' -r   :: �
 `VectCutAPI/config.json`:
 - `draft_profile`: `capcut_legacy` / `jianying_legacy` / `jianying_pro_10`(决定生成的 draft 格式)
 - `IS_CAPCUT_ENV`:CapCut vs 剪映
-- `PORT`:端口(融合时被 render_server 的 9002 覆盖)
+- `PORT`:端口(融合时被 render_server 的 9010 覆盖)
 
 > ⚠️ VectCutAPI 生成的 `jianying_pro_10`(10.2 格式)草稿与剪映 5.9.0 的兼容性未充分验证;`/render`(zip 直传)路径用 5.9.0 原生草稿已验证可用。
 
@@ -582,47 +582,43 @@ python template_engine.py render -t templates/xxx.yaml -v '{"k":"v"}' -r   :: �
   }
 }
 ```
-MCP Server 内部通过 `requests` 调 `http://localhost:9002` 的 REST API(stdio 传输)。
+MCP Server 内部通过 `requests` 调 `http://localhost:9010` 的 REST API(stdio 传输)。
 
 ---
 
 ## 15. 前端 Web GUI
 
-Vue 3 + Element Plus + Pinia + Vite,构建到 `static/` 由 Flask 托管。
+React 19 + Tailwind CSS + Vite,构建到 `static/` 由 Flask 托管 (源码在 `frontend-react/`,旧 Vue 工程位于 `frontend/` 已废弃)。
 
 ### 15.1 技术栈
-- Vue 3.5、Element Plus 2.8、Pinia 2.2、axios、marked(markdown 渲染)
-- Vite 5.4 构建
+- React 19、Tailwind CSS v4、TypeScript
+- Vite 6 构建,产物 `outDir: ../static`
 
-### 15.2 组件结构(`frontend/src/`)
+### 15.2 组件结构(`frontend-react/src/`)
 | 文件 | 职责 |
 |------|------|
-| `App.vue` | 主布局 |
-| `main.js` | 入口 |
-| `components/AssetPanel.vue` | 素材面板(上传/LocalSend/分析/预览) |
-| `components/ReceiveDialog.vue` | LocalSend 接收对话框(启停/状态/已收列表) |
-| `components/ChatPanel.vue` | 对话面板(SSE 流式) |
-| `components/DraftPanel.vue` | 草稿管理(列表/封面/删除) |
-| `components/RenderPanel.vue` | 渲染任务面板(提交/状态/下载) |
-| `stores/asset.js` | 素材状态 |
-| `stores/chat.js` | 对话状态 |
-| `stores/project.js` | 草稿/项目状态 |
-| `stores/render.js` | 渲染任务状态 |
-| `api/index.js` | axios API 封装(全部端点) |
+| `App.tsx` | 主布局 (面板切换/全局状态) |
+| `main.tsx` | 入口 |
+| `api.ts` | 后端 API 封装 (全部端点, 同源 fetch) |
+| `components/AssetPanel.tsx` | 素材面板(上传/LocalSend/分析/预览) |
+| `components/DraftPanel.tsx` | 草稿管理(列表/封面/删除/渲染) |
+| `components/ChatPanel.tsx` | 对话面板(SSE 流式) |
+| `components/SettingsPanel.tsx` | 设置面板 |
+| `components/TemplatesPanel.tsx` | 模板面板 |
 
 ### 15.3 构建与部署
 ```bat
-cd frontend
+cd frontend-react
 npm install
 npm run build    :: 产物到 ../static/, Flask 自动托管
 ```
-开发模式 `npm run dev`(5173 端口,代理到 9002)。生产模式访问 `http://localhost:9002` 直接用 Flask 托管的 SPA。
+开发模式 `npm run dev`(5173 端口,代理到 9010)。生产模式访问 `http://localhost:9010` 直接用 Flask 托管的 SPA。
 
 ---
 
 ## 16. REST API 完整参考
 
-> 基址:`http://localhost:9002`
+> 基址:`http://localhost:9010`
 
 ### 16.1 渲染
 | 端点 | 方法 | 入参 | 说明 |
@@ -703,7 +699,7 @@ npm run build    :: 产物到 ../static/, Flask 自动托管
 ### 流程 A:手机发素材 → 对话式生产
 ```
 1. serve.bat 启动服务
-2. 浏览器开 http://localhost:9002
+2. 浏览器开 http://localhost:9010
 3. 素材面板点"接收"启动 LocalSend
 4. 手机 LocalSend App 搜到"AI 视频工作台",发视频
 5. 素材自动落 render_uploads/,前端刷新显示
@@ -733,10 +729,10 @@ npm run build    :: 产物到 ../static/, Flask 自动托管
 
 ### 流程 D:zip 直传渲染(最快)
 ```
-curl -F "draft=@mydraft.zip" http://localhost:9002/render
+curl -F "draft=@mydraft.zip" http://localhost:9010/render
   → {"task_id": "...", "poll": "/render/status/..."}
-curl http://localhost:9002/render/status/<task_id>   # 轮询
-curl -O http://localhost:9002/render/download/<task_id>
+curl http://localhost:9010/render/status/<task_id>   # 轮询
+curl -O http://localhost:9010/render/download/<task_id>
 ```
 zip 内须含 `draft_content.json` 的草稿文件夹。
 
@@ -788,7 +784,7 @@ zip 内须含 `draft_content.json` 的草稿文件夹。
 ## 19. 故障排查与已知坑
 
 ### 19.1 服务启动
-- **端口 9002 被占/404**:旧进程残留,先 `stop.bat` 或 `Get-NetTCPConnection -LocalPort 9002 | Stop-Process`,再启动。日志显示 fusion 成功但端点 404 = 旧进程在服务。
+- **端口 9010 被占/404**:旧进程残留,先 `stop.bat` 或 `Get-NetTCPConnection -LocalPort 9010 | Stop-Process`,再启动。日志显示 fusion 成功但端点 404 = 旧进程在服务。
 - **VectCutAPI 融合失败**:缺 `oss2`/`json5`,降级为纯渲染模式。`pip install oss2 json5`。
 - **LocalSend 端口 53317 冲突**:关闭官方 LocalSend 或其他占用程序。
 

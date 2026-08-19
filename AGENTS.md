@@ -4,7 +4,7 @@ AutoCut — a Windows-only (Win10/11, Python 3.10+) workbench that automates 剪
 
 ## Layout & ownership
 
-- `render_server.py` — main service (Flask, port 9002). Serves the SPA from `static/`, manages the render task pool, and **fuses VectCutAPI editing routes** at import time via `sys.path.insert(0, 'VectCutAPI')` + `from capcut_server import app`. Editing endpoints (`create_draft`, `add_video`, `add_text`, …) live in `VectCutAPI/capcut_server.py`, NOT here.
+- `render_server.py` — main service (Flask, port 9010). Serves the SPA from `static/`, manages the render task pool, and **fuses VectCutAPI editing routes** at import time via `sys.path.insert(0, 'VectCutAPI')` + `from capcut_server import app`. Editing endpoints (`create_draft`, `add_video`, `add_text`, …) live in `VectCutAPI/capcut_server.py`, NOT here.
 - `VectCutAPI/` — a vendored fork of CapCutAPI (`capcut-api`, own `pyproject.toml`/`requirements.txt`). `pyJianYingDraft/` is its draft-manipulation library. Treat as a separate package; its `.flake8` config is scoped to it only.
 - `render_driver.py` — JianYing UI automation (Frida injection + Win32 `CreateDesktop` isolated desktops). Requires a real Windows JianYing install + calibration.
 - `autocut_cli.py` + `cli/` — CLI that talks to `render_server` over HTTP. Needs the server running.
@@ -33,7 +33,7 @@ cd frontend-react && npm run lint        # = tsc --noEmit (NOT eslint)
 - **Tests import root modules top-level** (`config`, `template_engine`, `perceive`, `memory_store`, `task_store`, `localsend_recv`, `render_server`, `cli.client`). Run pytest from the repo root; there is no package `__init__.py` making it a package.
 - **Tests are pure-logic only** — no Windows/JianYing/Frida/network needed. Rendering/driver paths are not covered by pytest.
 - **`pyproject.toml` (root) packages only the CLI** (`autocut_cli`, `config`, `cli.*`). Render/driver/Windows-side code is intentionally excluded from `pip install -e .`.
-- **CLI → server protocol**: `autocut` defaults to `http://127.0.0.1:9002`; override with `--api` or `AUTOCUT_API`. `--json` keeps stdout pure JSON (progress/logs go to stderr); exit code 0/1.
+- **CLI → server protocol**: `autocut` defaults to `http://127.0.0.1:9010`; override with `--api` or `AUTOCUT_API`. `--json` keeps stdout pure JSON (progress/logs go to stderr); exit code 0/1.
 - **Machine-local runtime files are gitignored**: `calib.json`, `tasks.db`, `render_uploads/`, `gui_uploads/`, `analysis_cache/`. Don't expect them present; create `.env`/`calib.json` before running.
 - **Security utilities live in `config.py`** (`is_within`, `safe_folder_name`, `safe_zip_extract`, `is_allowed_path`) — reuse them for any new file-upload/serve/draft path; server listens on `0.0.0.0` for LAN LocalSend.
 - **ASR backend** is `remote` (third-party endpoint) by default; `ASR_BACKEND=local` uses faster-whisper (optional dep, not in requirements).

@@ -20,7 +20,7 @@ def _int(name, default):
 
 # ============================================================ 服务
 RENDER_SERVER_HOST = os.environ.get('RENDER_SERVER_HOST', '0.0.0.0')
-RENDER_SERVER_PORT = _int('RENDER_SERVER_PORT', 9002)
+RENDER_SERVER_PORT = _int('RENDER_SERVER_PORT', 9010)
 # 内部自调用基址 (chat 工具 → 自身 REST 端点)
 API_BASE = os.environ.get('API_BASE', f'http://127.0.0.1:{RENDER_SERVER_PORT}')
 # BrowserSkill CLI (发布视频到视频号/抖音/小红书用). 默认装在 ~/.local/bin; 服务进程的 PATH

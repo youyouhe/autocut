@@ -77,6 +77,19 @@ def cmd_draft_list(args):
     output.print_result(_client(args).list_drafts(), args.json)
 
 
+def cmd_draft_add_image(args):
+    c = _client(args)
+    kw = {}
+    if args.start is not None: kw['start'] = args.start
+    if args.end is not None: kw['end'] = args.end
+    r = c.add_image(args.draft_id, args.url, **kw)
+    output.print_result(r, args.json)
+
+
+def cmd_draft_delete(args):
+    output.print_result(_client(args).delete_draft(args.folder), args.json)
+
+
 def cmd_render(args):
     c = _client(args)
     # 渲染前先保存草稿
@@ -164,12 +177,72 @@ def cmd_localsend_status(args):
     output.print_result(_client(args).localsend_status(), args.json)
 
 
+def cmd_asset_list(args):
+    output.print_result(_client(args).list_assets(), args.json)
+
+
+def cmd_asset_upload(args):
+    output.print_result(_client(args).upload_assets(args.files), args.json)
+
+
+def cmd_asset_delete(args):
+    output.print_result(_client(args).delete_asset(args.name), args.json)
+
+
+def cmd_asset_strip_audio(args):
+    output.print_result(_client(args).strip_audio(args.name), args.json)
+
+
+def cmd_asset_get_shots(args):
+    output.print_result(_client(args).get_shots(args.name), args.json)
+
+
+def cmd_asset_split_shots(args):
+    output.print_result(
+        _client(args).split_shots(args.name, force=args.force, sample_fps=args.sample_fps,
+                                   min_scene_len_sec=args.min_scene_len),
+        args.json
+    )
+
+
+def cmd_asset_get_main(args):
+    output.print_result(_client(args).get_main_video(), args.json)
+
+
+def cmd_asset_set_main(args):
+    output.print_result(_client(args).set_main_video(args.name), args.json)
+
+
+def cmd_asset_clear_main(args):
+    output.print_result(_client(args).clear_main_video(), args.json)
+
+
+def cmd_settings_get(args):
+    output.print_result(_client(args).get_settings(), args.json)
+
+
+def cmd_settings_set(args):
+    values = {}
+    for pair in args.pairs:
+        if '=' not in pair:
+            output.print_error(f"格式错误 (应为 KEY=VALUE): {pair}", args.json)
+        k, v = pair.split('=', 1)
+        if v.lower() in ('true', 'false') and k in ('PREFER_ASR',):
+            v = v.lower() == 'true'
+        values[k] = v
+    output.print_result(_client(args).save_settings(values), args.json)
+
+
+def cmd_settings_test(args):
+    output.print_result(_client(args).test_setting(args.target), args.json)
+
+
 # ============================================================ argparse 组装
 
 def _add_common(p, suppress=False):
     """全局参数 --api/--json. 子命令用 suppress=True 避免覆盖主解析器的值."""
     d = argparse.SUPPRESS if suppress else None
-    p.add_argument('--api', default=d, help='render_server 地址 (默认 $AUTOCUT_API 或 http://127.0.0.1:9002)')
+    p.add_argument('--api', default=d, help='render_server 地址 (默认 $AUTOCUT_API 或 http://127.0.0.1:9010)')
     p.add_argument('--json', action='store_true', default=d, help='输出纯 JSON (脚本消费)')
 
 
@@ -232,6 +305,17 @@ def build_parser():
     _add_common(d, suppress=True)
     d.set_defaults(func=cmd_draft_list)
 
+    d = dsub.add_parser('add-image', help='添加图片')
+    _add_common(d, suppress=True)
+    d.add_argument('draft_id'); d.add_argument('url')
+    d.add_argument('--start', type=float); d.add_argument('--end', type=float)
+    d.set_defaults(func=cmd_draft_add_image)
+
+    d = dsub.add_parser('delete', help='删除草稿')
+    _add_common(d, suppress=True)
+    d.add_argument('folder', help='草稿文件夹名')
+    d.set_defaults(func=cmd_draft_delete)
+
     # render
     sp = sub.add_parser('render', help='渲染草稿为 mp4')
     _add_common(sp, suppress=True)
@@ -281,6 +365,71 @@ def build_parser():
     _add_common(t, suppress=True); t.set_defaults(func=cmd_localsend_stop)
     t = lsub.add_parser('status', help='接收状态')
     _add_common(t, suppress=True); t.set_defaults(func=cmd_localsend_status)
+
+    # asset
+    sp = sub.add_parser('asset', help='素材管理')
+    _add_common(sp, suppress=True)
+    asub = sp.add_subparsers(dest='asset_cmd', required=True)
+
+    a = asub.add_parser('list', help='列出已上传素材')
+    _add_common(a, suppress=True); a.set_defaults(func=cmd_asset_list)
+
+    a = asub.add_parser('upload', help='上传本地文件到素材库')
+    _add_common(a, suppress=True)
+    a.add_argument('files', nargs='+', help='一个或多个本地文件路径')
+    a.set_defaults(func=cmd_asset_upload)
+
+    a = asub.add_parser('delete', help='删除素材')
+    _add_common(a, suppress=True)
+    a.add_argument('name', help='素材文件名 (如 "foo (1).mp4")')
+    a.set_defaults(func=cmd_asset_delete)
+
+    a = asub.add_parser('strip-audio', help='去除视频音轨 (之后分析只走画面 VLM, 不再走 VAD/ASR)')
+    _add_common(a, suppress=True)
+    a.add_argument('name', help='视频素材文件名')
+    a.set_defaults(func=cmd_asset_strip_audio)
+
+    a = asub.add_parser('shots', help='查看分镜拆分缓存结果 (没拆过 shots 字段是 null)')
+    _add_common(a, suppress=True)
+    a.add_argument('name', help='视频素材文件名')
+    a.set_defaults(func=cmd_asset_get_shots)
+
+    a = asub.add_parser('split-shots', help='分镜拆分: GPU CNN 特征检测镜头边界, 按边界切出每个镜头的独立小视频+关键帧')
+    _add_common(a, suppress=True)
+    a.add_argument('name', help='视频素材文件名')
+    a.add_argument('--force', action='store_true', help='忽略缓存重新拆分')
+    a.add_argument('--sample-fps', type=int, default=5, dest='sample_fps', help='抽帧检测帧率 (默认 5)')
+    a.add_argument('--min-scene-len', type=float, default=0.6, dest='min_scene_len', help='最短镜头长度秒 (默认 0.6)')
+    a.set_defaults(func=cmd_asset_split_shots)
+
+    a = asub.add_parser('get-main', help='查看当前主视频(最新录制的那条, 跟素材库分开管理)')
+    _add_common(a, suppress=True); a.set_defaults(func=cmd_asset_get_main)
+
+    a = asub.add_parser('set-main', help='把某个视频素材标记为当前主视频 (旧的自动变回普通素材库的一条)')
+    _add_common(a, suppress=True)
+    a.add_argument('name', help='视频素材文件名')
+    a.set_defaults(func=cmd_asset_set_main)
+
+    a = asub.add_parser('clear-main', help='取消当前主视频标记')
+    _add_common(a, suppress=True); a.set_defaults(func=cmd_asset_clear_main)
+
+    # settings
+    sp = sub.add_parser('settings', help='LLM/ASR 配置 (.env)')
+    _add_common(sp, suppress=True)
+    setsub = sp.add_subparsers(dest='settings_cmd', required=True)
+
+    s = setsub.add_parser('get', help='查看当前配置 (密钥脱敏)')
+    _add_common(s, suppress=True); s.set_defaults(func=cmd_settings_get)
+
+    s = setsub.add_parser('set', help='保存配置, 如: settings set QWEN_API_KEY=sk-xxx PREFER_ASR=true')
+    _add_common(s, suppress=True)
+    s.add_argument('pairs', nargs='+', help='KEY=VALUE ...')
+    s.set_defaults(func=cmd_settings_set)
+
+    s = setsub.add_parser('test', help='测试连通性 (用已保存的值)')
+    _add_common(s, suppress=True)
+    s.add_argument('target', choices=['llm', 'asr'])
+    s.set_defaults(func=cmd_settings_test)
 
     return p
 

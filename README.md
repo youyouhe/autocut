@@ -29,7 +29,7 @@
   - 渲染过程实时回传阶段（注入/打开/导出/渲染中）与导出字节数，前端进度条展示。
   - 任务历史落盘 SQLite（`tasks.db`），服务重启后结果可追溯。
 - 🎨 **双模式交互工作台**
-  - **现代化 React 19 SPA**：基于 Vite + Tailwind CSS，直接由后端 Flask（9002 端口）一体化托管。
+  - **现代化 React 19 SPA**：基于 Vite + Tailwind CSS，直接由后端 Flask（9010 端口）一体化托管。
   - **Gradio 快速原型台**（`gui.py`）：适合交互式调试与单步验证。
 
 ---
@@ -45,7 +45,7 @@
                                    │ HTTP / SSE / MCP
 ┌──────────────────────────────────▼─────────────────────────────────────┐
 │                       业务调度与能力层 (Core Services)                   │
-│  • REST 服务核心 (render_server.py:9002) - 路由融合与任务管理           │
+│  • REST 服务核心 (render_server.py:9010) - 路由融合与任务管理           │
 │  • 声明式模板引擎 (template_engine.py)   - YAML 驱动视频批量生成          │
 │  • 视频感知分析 (perceive.py)            - Qwen VLM + ASR + 场景分割      │
 │  • 内存状态缓存 (memory_store.py)        - 视频元数据与文件热缓存        │
@@ -66,7 +66,7 @@
 
 ```text
 autocut/
-├── render_server.py        # 主服务 (Flask REST API + 融合 VectCut + 前端托管 :9002)
+├── render_server.py        # 主服务 (Flask REST API + 融合 VectCut + 前端托管 :9010)
 ├── render_driver.py        # 剪映 UI 自动化驱动与渲染闭环 (Frida Hook + Win32)
 ├── render_monitor.py       # 导出监听与状态检测模块
 ├── hook_focus.js           # 注入剪映主进程的 Frida 脚本 (坐标点击/窗口激活)
@@ -129,7 +129,7 @@ ASR_API_KEY=your_asr_api_key_here
 # AUTO_PERCEIVE=1        # 素材收件后自动后台分析 (消耗 VLM token)
 
 # 服务端口
-RENDER_SERVER_PORT=9002
+RENDER_SERVER_PORT=9010
 ```
 
 > 所有路径/端口/渲染参数集中在 `config.py`，由环境变量驱动。剪映安装目录、草稿目录、导出目录默认按当前 Windows 用户自动推导，特殊安装才需在 `.env` 中覆盖 `JY_APP_BASE` / `JY_DRAFT_ROOT` / `VIDEOS_DIR`。
@@ -148,7 +148,7 @@ python render_driver.py calibrate
   ```bash
   python render_server.py
   ```
-  打开浏览器访问 `http://localhost:9002` 即可使用一体化 Web 工作台。
+  打开浏览器访问 `http://localhost:9010` 即可使用一体化 Web 工作台。
 
 - **方式二：Windows 后台静默启动**
   双击运行 `serve.bat`。
@@ -173,7 +173,7 @@ python template_engine.py render \
 
 ### 2. 命令行 CLI (供脚本 / 其他程序调用)
 
-`autocut` 是面向外部调用者的命令行入口，通过 `render_server` 的 REST API 操作（需先启动主服务）。默认连接 `http://127.0.0.1:9002`，可用 `--api` 或 `$AUTOCUT_API` 指向远程渲染机。
+`autocut` 是面向外部调用者的命令行入口，通过 `render_server` 的 REST API 操作（需先启动主服务）。默认连接 `http://127.0.0.1:9010`，可用 `--api` 或 `$AUTOCUT_API` 指向远程渲染机。
 
 ```bash
 # 全局安装 (可选, pip install -e . 后直接可用 autocut 命令)
@@ -216,7 +216,7 @@ autocut template render emotional_quotes --vars '{"title":"旅行"}' --render
 **脚本化约定**：
 - `--json` 输出纯 JSON（`stdout` 保持纯净，进度/日志走 `stderr`），便于 `jq` 管道。
 - 退出码：`0` 成功，`1` 失败（HTTP 错误 / 渲染失败 / 超时）。
-- 远程调用：`AUTOCUT_API=http://渲染机:9002 autocut render <id> --wait`，无需在调用机安装剪映。
+- 远程调用：`AUTOCUT_API=http://渲染机:9010 autocut render <id> --wait`，无需在调用机安装剪映。
 
 **一行流水线示例**：
 

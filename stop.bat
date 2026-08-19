@@ -17,10 +17,10 @@ if exist "%~dp0serve.pid" (
   del "%~dp0serve.pid" >nul 2>&1
 )
 if "!KILLED!"=="0" (
-  for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":9002" ^| findstr "LISTENING"') do (
+  for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":9010" ^| findstr "LISTENING"') do (
     taskkill /PID %%a /F >nul 2>&1
     if !errorlevel!==0 (
-      echo [done] stopped PID=%%a port 9002
+      echo [done] stopped PID=%%a port 9010
       set "KILLED=1"
     )
   )

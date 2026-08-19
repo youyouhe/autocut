@@ -1,8 +1,8 @@
-// 真实后端 API 封装 — 全部指向 Flask render_server (:9002, 同源).
+// 真实后端 API 封装 — 全部指向 Flask render_server (:9010, 同源).
 // 端点契约见 SYSTEM_MANUAL.md §16 与 render_server.py / capcut_server.py.
 
 // ---------- 类型 (按真实返回字段) ----------
-export type AssetType = 'video' | 'image' | 'audio' | 'other';
+export type AssetType = 'video' | 'image' | 'audio' | 'subtitle' | 'text' | 'other';
 
 export interface Asset {
   name: string;
@@ -11,6 +11,7 @@ export interface Asset {
   type: AssetType;
   size?: number;
   modified_at?: string;
+  has_audio?: boolean | null;
   analysis?: PerceiveResult | { error?: string } | null;
   _cached?: boolean;
   _duration?: string;
@@ -55,8 +56,10 @@ export interface PerceiveResult {
   meta?: { duration?: number; width?: number; height?: number; fps?: number; source_path?: string };
   scenes?: number[];   // 镜头切换时间点 (秒)
   visual_analysis?: string;   // 含 JSON 块
+  tags?: string[];   // VLM 抽出的短关键词, 供 agent 快速按标签检索
   audio?: { full_text?: string; segments?: any[]; asr_model?: string };
   srt?: string;   // 标准 SRT 字幕文本
+  analysis_mode?: 'asr' | 'vlm' | 'none';   // 本次内容判断走的是听(asr)还是看(vlm)
   _cached?: boolean;
   created_at?: string;
   error?: string;
@@ -104,6 +107,16 @@ export function serveUrl(path: string): string {
   return `/api/video/serve?path=${encodeURIComponent(path)}`;
 }
 
+export function deleteAsset(name: string): Promise<{ ok: boolean; error?: string }> {
+  return jsonFetch(`/api/assets/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
+/** 去除视频音轨 —— 之后该素材没有音轨, 分析时自动跳过 VAD/ASR, 只用画面(VLM)匹配,
+ * 不再受环境音/嘈杂人声被误判成"语音"的影响。 */
+export function stripAudio(name: string): Promise<{ ok: boolean; error?: string; name?: string; has_audio?: boolean }> {
+  return jsonFetch(`/api/assets/${encodeURIComponent(name)}/strip-audio`, { method: 'POST' });
+}
+
 export function perceive(path: string, opts?: { force?: boolean; do_asr?: boolean; frames?: number }): Promise<PerceiveResult> {
   return jsonFetch<PerceiveResult>('/api/perceive', {
     method: 'POST',
@@ -112,9 +125,58 @@ export function perceive(path: string, opts?: { force?: boolean; do_asr?: boolea
   });
 }
 
+export interface Shot {
+  index: number;
+  start: number;
+  end: number;
+  duration: number;
+  clip_path?: string | null;
+  keyframe_path?: string | null;
+  clip_url?: string | null;
+  keyframe_url?: string | null;
+}
+
+/** 只读分镜拆分缓存, 没拆过 shots 是 null */
+export function getShots(name: string): Promise<{ shots: Shot[] | null }> {
+  return jsonFetch(`/api/assets/${encodeURIComponent(name)}/shots`);
+}
+
+/** 分镜拆分: GPU CNN 特征检测镜头边界, 按边界切出每个镜头的独立小视频+关键帧 */
+export function splitShots(name: string, opts?: { force?: boolean; sample_fps?: number; min_scene_len_sec?: number }): Promise<{ ok: boolean; error?: string; shots?: Shot[] }> {
+  return jsonFetch(`/api/assets/${encodeURIComponent(name)}/split-shots`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force: opts?.force, sample_fps: opts?.sample_fps ?? 5, min_scene_len_sec: opts?.min_scene_len_sec ?? 0.6 }),
+  });
+}
+
 export function checkCached(path: string): Promise<{ cached: boolean; result?: PerceiveResult }> {
   return jsonFetch(`/api/perceive/cached?path=${encodeURIComponent(path)}`);
 }
+
+export interface MainVideo {
+  path: string;
+  name: string;
+  set_at: number;
+  url?: string;
+  poster_path?: string;
+  poster_url?: string;
+}
+
+/** 当前"主视频"(最新录制的那条, 跟长期存在的素材库分开管理) */
+export function getMainVideo(): Promise<{ main_video: MainVideo | null }> {
+  return jsonFetch('/api/main-video');
+}
+
+/** 标记为当前主视频; 旧的主视频自动变回普通素材库的一条 */
+export function setMainVideo(name: string): Promise<{ ok: boolean; error?: string; main_video?: MainVideo }> {
+  return jsonFetch(`/api/assets/${encodeURIComponent(name)}/set-main`, { method: 'POST' });
+}
+
+export function clearMainVideo(): Promise<{ ok: boolean }> {
+  return jsonFetch('/api/main-video/clear', { method: 'POST' });
+}
+
 
 // ---------- 草稿 ----------
 export function listDrafts(): Promise<Draft[]> {
@@ -154,6 +216,31 @@ export function saveDraft(draft_id: string): Promise<{ success: boolean; error?:
   });
 }
 
+// ---------- 模板 ----------
+export interface TemplateInfo {
+  file: string;
+  name: string;
+  description: string;
+  variables: string[];
+}
+export function listTemplates(): Promise<TemplateInfo[]> {
+  return jsonFetch<TemplateInfo[]>('/api/templates');
+}
+
+export interface TemplateRenderResult {
+  draft_id?: string;
+  save?: { success?: boolean; error?: string };
+  render?: { task_id?: string };
+  error?: string;
+}
+export function renderTemplate(templateFile: string, variables: Record<string, string>, doRender = false): Promise<TemplateRenderResult> {
+  const template = templateFile.replace(/\.ya?ml$/, '');
+  return jsonFetch<TemplateRenderResult>('/api/templates/render', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ template, variables, render: doRender }),
+  });
+}
+
 // ---------- 渲染 ----------
 export function renderDraft(draft_id: string): Promise<{ task_id: string; status: string; poll: string; error?: string }> {
   return jsonFetch(`/render/draft/${encodeURIComponent(draft_id)}`, { method: 'POST' });
@@ -172,17 +259,24 @@ export function downloadUrl(task_id: string): string {
 }
 
 // ---------- 对话 (SSE) ----------
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  toolDetails?: { tool: string; args: any; result: any };
+}
+
 export interface ChatChunk {
   text?: string;
   tool?: string;
   args?: any;
   result?: any;
   draft_id?: string;
+  conversation_id?: string;
 }
 
 /** SSE 流式对话. onChunk 收到每个 data: 事件; 返回时流已结束 ([DONE]). */
 export async function chatStream(
-  payload: { message: string; draft_id?: string | null; asset_paths?: string[] },
+  payload: { message: string; draft_id?: string | null; asset_paths?: string[]; conversation_id?: string | null },
   onChunk: (c: ChatChunk) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -213,6 +307,39 @@ export async function chatStream(
   }
 }
 
+export interface ConversationSummary {
+  id: string;
+  title: string | null;
+  draft_id: string | null;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+}
+export interface Conversation {
+  id: string;
+  title: string | null;
+  draft_id: string | null;
+  messages: ChatMessage[];
+  created_at: number;
+  updated_at: number;
+}
+
+export function listConversations(): Promise<ConversationSummary[]> {
+  return jsonFetch<ConversationSummary[]>('/api/chat/conversations');
+}
+export function createConversation(draft_id?: string | null): Promise<{ id: string }> {
+  return jsonFetch('/api/chat/conversations', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draft_id: draft_id ?? null }),
+  });
+}
+export function getConversation(id: string): Promise<Conversation> {
+  return jsonFetch<Conversation>(`/api/chat/conversations/${encodeURIComponent(id)}`);
+}
+export function deleteConversation(id: string): Promise<{ ok: boolean }> {
+  return jsonFetch(`/api/chat/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 // ---------- LocalSend ----------
 export function localsendStatus(): Promise<LocalSendStatus> {
   return jsonFetch<LocalSendStatus>('/api/localsend/status');
@@ -227,4 +354,31 @@ export function localsendStop(): Promise<any> {
 // ---------- 系统 ----------
 export function health(): Promise<{ ok: boolean }> {
   return jsonFetch('/health');
+}
+
+// ---------- 设置 (LLM/ASR 密钥) ----------
+export interface SettingField {
+  key: string;
+  label: string;
+  secret: boolean;
+  group: 'llm' | 'asr' | 'analysis';
+  type: 'text' | 'secret' | 'bool';
+  value: string | boolean;   // secret 字段为脱敏值 (如 ****ab12), bool 字段为 true/false, 仅供展示
+  configured: boolean;
+}
+export function getSettings(): Promise<SettingField[]> {
+  return jsonFetch<SettingField[]>('/api/settings');
+}
+export function saveSettings(values: Record<string, string | boolean>): Promise<SettingField[]> {
+  return jsonFetch<SettingField[]>('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(values),
+  });
+}
+export interface TestResult { ok: boolean; error?: string; model?: string; status?: number }
+export function testSetting(target: 'llm' | 'asr', overrides: Record<string, string | boolean>): Promise<TestResult> {
+  return jsonFetch<TestResult>('/api/settings/test', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target, ...overrides }),
+  });
 }

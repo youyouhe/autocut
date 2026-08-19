@@ -6,7 +6,7 @@
 #   python agent_demo.py "做一个关于海边日落的15秒短视频，配文字'美好的一天'"
 #
 # 需要:
-#   1. render_server 在 localhost:9002 运行
+#   1. render_server 在 localhost:9010 运行
 #   2. 阿里云 DashScope API key (Qwen3.7-Plus)
 
 import os, sys, json, time
