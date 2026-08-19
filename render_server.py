@@ -923,6 +923,25 @@ def api_chat():
         {
             "type": "function",
             "function": {
+                "name": "add_subtitle",
+                "description": "按 SRT 内容批量加字幕轨(一条 cue 一段, 时间轴来自 SRT 本身, 和语音天然同步). "
+                               "做视频字幕【必须】用这个工具, 禁止用 add_text 一条条手动排字幕 (拿不到真实语音时间点, "
+                               "排出来必然不同步). SRT 从 get_transcript 拿 (返回里有 srt 字段) 或用户直接提供.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "srt": {"type": "string", "description": "SRT 全文 (标准格式: 序号/起止时间行/文本行), 不是文件路径"},
+                        "time_offset": {"type": "number", "description": "整体时间偏移秒数, 默认0"},
+                        "font_size": {"type": "number", "description": "字号, 默认5"},
+                        "font_color": {"type": "string", "description": "字体颜色十六进制, 默认 '#FFFFFF'"}
+                    },
+                    "required": ["srt"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "add_text",
                 "description": "添加文字到草稿；不止字幕，也可用于标题/水印/角标等任意文字标识——通过 track_name 区分轨道、transform_x/transform_y 控制画面位置。",
                 "parameters": {
@@ -1232,10 +1251,12 @@ def api_chat():
             if isinstance(audio, dict):
                 result = {
                     'full_text': audio.get('full_text', '(无语音)'),
-                    'segments': audio.get('segments', [])
+                    'segments': audio.get('segments', []),
+                    # srt 全文: 喂给 add_subtitle 用 (时间轴来自语音识别, 天然同步)
+                    'srt': analysis.get('srt', '')
                 }
             else:
-                result = {'full_text': '(无语音)', 'segments': []}
+                result = {'full_text': '(无语音)', 'segments': [], 'srt': ''}
 
         elif name == 'analyze_resource':
             fname = args.get('name', '')
@@ -1297,6 +1318,19 @@ def api_chat():
             if args.get('end') is not None: d['end'] = args['end']
             r = _post_internal('add_video', d)
             result = {'ok': r.get('success', False), 'track_name': track_name, 'target_start': target_start}
+
+        elif name == 'add_subtitle':
+            if not draft_id: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
+            srt = args.get('srt') or ''
+            if not srt.strip():
+                result = {'error': 'srt 内容为空'}
+            else:
+                d = {'draft_id': draft_id, 'srt': srt}
+                if args.get('time_offset') is not None: d['time_offset'] = args['time_offset']
+                if args.get('font_size') is not None: d['font_size'] = args['font_size']
+                if args.get('font_color') is not None: d['font_color'] = args['font_color']
+                r = _post_internal('add_subtitle', d)
+                result = {'ok': r.get('success', False), 'error': r.get('error')}
 
         elif name == 'add_text':
             if not draft_id: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
@@ -1463,7 +1497,8 @@ def api_chat():
 2. 资源未分析时，直接调用 analyze_resource 自己触发分析，不要让用户去点界面按钮；分析完再继续
 3. 引用语音内容时带时间戳；但时间戳/文案必须直接来自工具返回的 segments，禁止自己编造或推测
 4. 保持简洁，中文回复
-5. 制作视频的标准流程: create_draft → add_video(url, start, end) → [可选 add_text/add_audio/add_image] → save_draft → render
+5. 制作视频的标准流程: create_draft → add_video(url, start, end) → [可选 add_audio/add_image] → add_subtitle(字幕) → save_draft → render
+5b. 【字幕铁律】加字幕只能用 add_subtitle 传 SRT 全文(从 get_transcript 返回的 srt 字段拿), 绝不用 add_text 排字幕——add_text 拿不到真实语音时间点, 排出来必然不同步。用户说"字幕不同步/重新解析过要更新字幕"时: 重新 get_transcript 拿最新 srt, 重建草稿(或确认旧草稿字幕后重做), 再渲染
 6. 当用户要求"渲染/导出/出片/出视频"时，保存草稿后必须调用 render 工具提交渲染，不要只说"可以渲染了"；提交后【默认自动监控】：立即用 render_status(wait=true) 查询，未完成就继续调用（每次服务端会等~25秒），直到 done/error，然后直接告知用户结果（done 报 mp4 文件名，error 报错误摘要），不要问"需要我帮你监控吗"，也不要中途汇报无意义的进度
 7. add_video 的 start/end 是源视频的截取起止秒数（如 start=0, end=10 取前10秒）；target_start 才是成片时间轴上的位置，不填会自动接在同名轨道末尾
 7b. "主视频"（贯穿全片的主体素材）始终放在 add_video 默认的 'video_main' 轨道，按顺序多次调用即可自动接龙；"补充素材/花絮/B-roll"（叠加在主视频某个时间点上方的片段）必须用不同的 track_name（如 'broll_1'）并显式指定 target_start=该素材要出现的成片秒数，同时给一个比主视频轨道更高的 relative_index（如 1），否则会被主视频盖住或跟主视频撞在同一条轨道上
