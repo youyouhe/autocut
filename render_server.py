@@ -377,12 +377,17 @@ def api_perceive_by_path():
 
     # 调 VLM 分析
     try:
-        from perceive import perceive_video
-        result = perceive_video(
-            path,
-            do_asr=data.get('do_asr', True),
-            frame_count=int(data.get('frames', 4))
-        )
+        ext = os.path.splitext(path)[1].lower()
+        if _ASSET_TYPE_BY_EXT.get(ext) == 'image':
+            from perceive import perceive_image
+            result = perceive_image(path)
+        else:
+            from perceive import perceive_video
+            result = perceive_video(
+                path,
+                do_asr=data.get('do_asr', True),
+                frame_count=int(data.get('frames', 4))
+            )
         result['_cached'] = False
         # 写入内存 + 落盘
         save_analysis(path, result)
@@ -500,24 +505,28 @@ def api_memory_analysis_list():
 
 @app.route('/api/video/serve', methods=['GET'])
 def api_video_serve():
-    """从内存缓存提供视频字节 (≤50MB 视频零磁盘 IO). 仅限白名单目录."""
+    """从内存缓存提供素材字节 (≤50MB 零磁盘 IO; 视频/音频/图片都走这个, 名字是历史遗留).
+    仅限白名单目录. mimetype 按真实扩展名猜, 不能固定写 video/mp4 —— 否则 <audio>/<img>
+    标签拿到的 Content-Type 是错的, 浏览器不认."""
     from memory_store import maybe_load_video, get_video_bytes
+    import mimetypes
     path = request.args.get('path', '')
     if not path or not os.path.exists(path):
         return jsonify({'error': 'not found'}), 404
     if not config.is_allowed_path(path):
         return jsonify({'error': 'path not allowed'}), 403
+    mimetype = mimetypes.guess_type(path)[0] or 'application/octet-stream'
     # 尝试载入内存
     maybe_load_video(path)
     data = get_video_bytes(path)
     if data:
         from flask import Response
-        return Response(data, mimetype='video/mp4',
+        return Response(data, mimetype=mimetype,
                         headers={'Content-Length': str(len(data)),
                                  'Cache-Control': 'max-age=3600',
                                  'X-From-RAM': 'true'})
     # 太大不在内存, 走磁盘
-    return send_file(path, mimetype='video/mp4')
+    return send_file(path, mimetype=mimetype)
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -533,50 +542,237 @@ def api_upload():
         name = secure_filename(f.filename) or 'upload.bin'
         dst = os.path.join(UPLOAD_DIR, name)
         f.save(dst)
-        ext = os.path.splitext(name)[1].lower()
-        ftype = 'video' if ext in ('.mp4', '.mov', '.avi', '.mkv') else \
-                'image' if ext in ('.jpg', '.png', '.jpeg', '.webp') else \
-                'audio' if ext in ('.mp3', '.wav', '.aac', '.m4a') else 'other'
-        results.append({'name': name, 'path': dst, 'type': ftype, 'file': dst})
+        results.append(_classify_asset(name, dst))
     return jsonify({'assets': results})
+
+
+# 展示给用户的素材类型: 视频/图片/音频/字幕(srt)/文案(txt, 常见于 LocalSend "发文字").
+# 其余(包括 .gitkeep 等占位文件、无法识别的扩展名)一律归 'other', 列表接口里过滤掉不展示.
+_ASSET_TYPE_BY_EXT = {
+    '.mp4': 'video', '.mov': 'video', '.avi': 'video', '.mkv': 'video',
+    '.jpg': 'image', '.jpeg': 'image', '.png': 'image', '.webp': 'image',
+    '.mp3': 'audio', '.wav': 'audio', '.aac': 'audio', '.m4a': 'audio',
+    '.srt': 'subtitle',
+    '.txt': 'text',
+}
 
 
 def _classify_asset(name, path):
     ext = os.path.splitext(name)[1].lower()
-    ftype = 'video' if ext in ('.mp4', '.mov', '.avi', '.mkv') else \
-            'image' if ext in ('.jpg', '.png', '.jpeg', '.webp') else \
-            'audio' if ext in ('.mp3', '.wav', '.aac', '.m4a') else 'other'
-    return {'name': name, 'path': path, 'type': ftype, 'file': path}
+    ftype = _ASSET_TYPE_BY_EXT.get(ext, 'other')
+    asset = {'name': name, 'path': path, 'type': ftype, 'file': path}
+    if ftype == 'video':
+        # 探测音轨是否存在, 供前端展示"已去除音轨"状态 (成功去音后这里会变 False)
+        try:
+            from perceive import has_audio_stream
+            asset['has_audio'] = has_audio_stream(path)
+        except Exception:
+            asset['has_audio'] = None
+    return asset
 
 
 @app.route('/api/assets', methods=['GET'])
 def api_assets_scan():
-    """扫描 render_uploads/ 目录, 返回当前所有素材 (供 LocalSend 收到新文件后前端刷新)"""
+    """扫描 render_uploads/ 目录, 返回当前所有素材 (供 LocalSend 收到新文件后前端刷新).
+    过滤掉无法识别的文件(如 .gitkeep 占位文件) —— 那些不是给用户看的素材."""
     results = []
     try:
         for name in sorted(os.listdir(UPLOAD_DIR)):
+            if name.startswith('.'):
+                continue
             p = os.path.join(UPLOAD_DIR, name)
-            if os.path.isfile(p):
-                results.append(_classify_asset(name, p))
+            if not os.path.isfile(p):
+                continue
+            asset = _classify_asset(name, p)
+            if asset['type'] == 'other':
+                continue
+            results.append(asset)
     except Exception:
         pass
     return jsonify({'assets': results})
 
 
+@app.route('/api/assets/<name>', methods=['DELETE'])
+def api_delete_asset(name):
+    """删除 render_uploads/ 下的一个素材文件 (防路径穿越: 校验 basename 不改名, 否则带空格/括号
+    的去重文件名如 'foo (1).mp4' 会被 secure_filename 改写导致匹配不上磁盘上的真实文件名)"""
+    if not config.safe_folder_name(name):
+        return jsonify({'ok': False, 'error': 'invalid name'}), 400
+    path = os.path.join(UPLOAD_DIR, name)
+    if not os.path.isfile(path):
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+    try:
+        os.remove(path)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    return jsonify({'ok': True})
+
+
+@app.route('/api/assets/<name>/strip-audio', methods=['POST'])
+def api_asset_strip_audio(name):
+    """去掉视频的音轨 —— 去音后该文件没有音轨, has_audio_stream()=False, 分析时
+    自动跳过 VAD/ASR 整段逻辑, 只靠 VLM 看画面来匹配, 彻底不受环境音/嘈杂人声被
+    webrtcvad 误判成"语音"的影响 (即上面 VID_20260814_200626.mp4 那种情况)。"""
+    if not config.safe_folder_name(name):
+        return jsonify({'ok': False, 'error': 'invalid name'}), 400
+    path = os.path.join(UPLOAD_DIR, name)
+    if not os.path.isfile(path):
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+    ext = os.path.splitext(name)[1].lower()
+    if _ASSET_TYPE_BY_EXT.get(ext) != 'video':
+        return jsonify({'ok': False, 'error': '只能对视频文件去除声音'}), 400
+
+    tmp_path = path + '.noaudio.tmp' + ext
+    try:
+        r = subprocess.run(
+            ['ffmpeg', '-y', '-i', path, '-c:v', 'copy', '-an', tmp_path],
+            capture_output=True, timeout=120
+        )
+        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+            err = r.stderr.decode('utf-8', 'replace')[-300:] if r.stderr else 'unknown error'
+            return jsonify({'ok': False, 'error': f'ffmpeg 处理失败: {err}'}), 500
+        os.replace(tmp_path, path)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    finally:
+        if os.path.exists(tmp_path):
+            try: os.unlink(tmp_path)
+            except Exception: pass
+
+    from memory_store import invalidate_analysis
+    invalidate_analysis(path)
+    return jsonify({'ok': True, 'name': name, 'has_audio': False})
+
+
+def _shot_url(path):
+    if not path:
+        return None
+    from urllib.parse import quote
+    return f'/api/video/serve?path={quote(path)}'
+
+
+def _shots_response(shots):
+    out = []
+    for s in shots:
+        out.append({**s, 'clip_url': _shot_url(s.get('clip_path')), 'keyframe_url': _shot_url(s.get('keyframe_path'))})
+    return out
+
+
+@app.route('/api/assets/<name>/shots', methods=['GET'])
+def api_asset_get_shots(name):
+    """只读镜头拆分缓存, 没拆过返回 shots: null (前端据此显示"去拆分"而不是"拆分中")。"""
+    if not config.safe_folder_name(name):
+        return jsonify({'error': 'invalid name'}), 400
+    path = os.path.join(UPLOAD_DIR, name)
+    if not os.path.isfile(path):
+        return jsonify({'error': 'not found'}), 404
+    import shot_split
+    shots = shot_split.get_cached_shots(path)
+    return jsonify({'shots': _shots_response(shots) if shots else None})
+
+
+@app.route('/api/assets/<name>/split-shots', methods=['POST'])
+def api_asset_split_shots(name):
+    """分镜拆分: GPU CNN 特征检测镜头边界, 按边界切出每个镜头的独立小视频 + 关键帧。
+    结果缓存, 大视频/长视频耗时可能到几十秒(推理+每个镜头重新编码), 非 force 命中缓存立即返回。"""
+    if not config.safe_folder_name(name):
+        return jsonify({'ok': False, 'error': 'invalid name'}), 400
+    path = os.path.join(UPLOAD_DIR, name)
+    if not os.path.isfile(path):
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+    ext = os.path.splitext(name)[1].lower()
+    if _ASSET_TYPE_BY_EXT.get(ext) != 'video':
+        return jsonify({'ok': False, 'error': '只能对视频文件做分镜拆分'}), 400
+
+    data = request.json or {}
+    import shot_split
+    try:
+        shots = shot_split.split_shots(
+            path,
+            force=bool(data.get('force', False)),
+            sample_fps=int(data.get('sample_fps', 5)),
+            min_scene_len_sec=float(data.get('min_scene_len_sec', 0.6)),
+        )
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    return jsonify({'ok': True, 'name': name, 'shots': _shots_response(shots)})
+
+
+@app.route('/api/main-video', methods=['GET'])
+def api_get_main_video():
+    """当前"主视频"(最新录制的那条, 每次会被替换) —— 跟长期存在的素材库分开管理。"""
+    import main_video_store
+    info = main_video_store.get()
+    if not info:
+        return jsonify({'main_video': None})
+    return jsonify({'main_video': _main_video_response(info)})
+
+
+def _main_video_response(info):
+    """poster.jpg 是固定文件名, 换主视频后内容变了但 URL 字符串没变 —— 浏览器会拿
+    Cache-Control 缓存的旧图顶替, 界面上看到的就是上一条主视频的画面。拼个版本号
+    (每次 set() 都会变) 到 URL 后面, 强制换主视频后浏览器认为是新资源, 重新请求。"""
+    v = info.get('set_at', 0)
+    url = _shot_url(info['path'])
+    poster_url = _shot_url(info.get('poster_path'))
+    return {
+        **info,
+        'url': f'{url}&v={v}' if url else url,
+        'poster_url': f'{poster_url}&v={v}' if poster_url else poster_url,
+    }
+
+
+@app.route('/api/assets/<name>/set-main', methods=['POST'])
+def api_asset_set_main(name):
+    """把这个素材标记为当前主视频。旧的主视频不用做任何处理 —— 指针一移开它自动就是
+    普通素材库里的一条了, 可以被当成补充素材(比如剪一段旧镜头用)继续复用。"""
+    if not config.safe_folder_name(name):
+        return jsonify({'ok': False, 'error': 'invalid name'}), 400
+    path = os.path.join(UPLOAD_DIR, name)
+    if not os.path.isfile(path):
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+    ext = os.path.splitext(name)[1].lower()
+    if _ASSET_TYPE_BY_EXT.get(ext) != 'video':
+        return jsonify({'ok': False, 'error': '只能把视频文件设为主视频'}), 400
+    import main_video_store
+    info = main_video_store.set(path)
+    return jsonify({'ok': True, 'main_video': _main_video_response(info)})
+
+
+@app.route('/api/main-video/clear', methods=['POST'])
+def api_clear_main_video():
+    import main_video_store
+    main_video_store.clear()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
-    """SSE 流式对话: Agent 用 function calling 按需查询资源信息"""
+    """SSE 流式对话: Agent 用 function calling 按需查询资源信息.
+    多轮记忆: conversation_id 对应的历史 user/assistant 文本会喂给 LLM 当上下文,
+    本轮结束后连同 tool 卡片一起存回 chat_store, 供前端历史列表/切换会话用."""
     data = request.json or {}
     message = data.get('message', '')
     asset_paths = data.get('asset_paths', []) or []
     draft_id = data.get('draft_id')
+    conversation_id = data.get('conversation_id')
     if not message:
         return jsonify({'error': 'message is required'}), 400
 
     from flask import Response, stream_with_context
     from openai import OpenAI as _OAI
-    from memory_store import get_analysis
+    from memory_store import get_analysis, save_analysis
     from perceive import QWEN_API_KEY as QWEN_KEY, QWEN_BASE_URL as QWEN_URL, QWEN_MODEL as LLM_MODEL
+    import chat_store
+
+    is_new_conversation = not conversation_id
+    if is_new_conversation:
+        conversation_id = chat_store.create(draft_id=draft_id)
+    prior = chat_store.get(conversation_id)
+    prior_messages = prior['messages'] if prior else []
+    # 若已有会话之前存过 draft_id, 且这次请求没带(比如切换会话后前端还没同步), 用存的
+    if not draft_id and prior and prior.get('draft_id'):
+        draft_id = prior['draft_id']
 
     # 定义工具 (function calling)
     TOOLS = [
@@ -584,8 +780,46 @@ def api_chat():
             "type": "function",
             "function": {
                 "name": "list_resources",
-                "description": "列出所有已上传的资源（名称、类型、是否已分析）。用户问'有哪些素材'时调用。",
+                "description": "列出所有已上传的资源（名称、类型、是否已分析、已有标签）。用户问'有哪些素材'时调用。",
                 "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_main_video",
+                "description": "获取当前被标记为'主视频'的素材(每次最新录制/最新一期的那条，跟长期存在的素材库分开管理，由用户在界面手动标记)。用户说'主视频'/'这次的视频'/'最新录的'而没指定具体文件名时，先调用这个解析出实际文件名，不要直接去猜或要求用户重复报文件名。",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_by_tags",
+                "description": "按关键词标签快速检索素材 —— SQLite 索引查询, 不调用 LLM/网络, 毫秒级返回。素材数量多时,先用这个粗筛出候选文件名, 缩小范围再对具体某个文件调用 get_resource_detail/get_transcript 看全文细节, 避免一次性把所有素材的完整描述都塞进对话上下文浪费 token。用户想找'带山的视频''风景图'这类按内容筛选素材的需求时优先用这个。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "keywords": {"type": "array", "items": {"type": "string"}, "description": "要匹配的关键词, 如 ['山','水塘','风景']"},
+                        "type": {"type": "string", "description": "只筛选某类素材: video/image/audio, 可选"}
+                    },
+                    "required": ["keywords"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_assets",
+                "description": "按自由文本全文检索素材 —— SQLite 模糊查询, 在文件名/画面描述(VLM)/口播文案(ASR)/标签里搜, 不调用 LLM/网络。当标签检索(search_by_tags)不够精确、或用户用整句话描述要找的内容(如'有晚霞和凉亭的镜头')时, 用这个全文检索兜底。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "检索文本, 如 '晚霞 凉亭' 或 '河边风景'"},
+                        "type": {"type": "string", "description": "只筛选某类素材: video/image/audio, 可选"}
+                    },
+                    "required": ["query"]
+                }
             }
         },
         {
@@ -619,6 +853,35 @@ def api_chat():
         {
             "type": "function",
             "function": {
+                "name": "analyze_resource",
+                "description": "对一个尚未分析的视频/图片资源做内容分析并缓存结果 (视频: 画面VLM+语音ASR; 图片: 直接VLM看图)。用户要求分析/查看内容而资源显示'未分析'时，直接调用这个工具自己触发分析，不要让用户去点界面按钮。视频较长时可能耗时数十秒。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "资源文件名"}
+                    },
+                    "required": ["name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "split_shots",
+                "description": "对一个视频做分镜拆分：检测镜头边界(切镜点), 并把每个镜头切成独立的小视频文件+关键帧。用户要求'分镜/拆镜头/按镜头切开'时调用。已经拆过的直接返回缓存结果, 不重复拆。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "视频资源文件名"},
+                        "force": {"type": "boolean", "description": "忽略缓存重新拆分, 默认 false"}
+                    },
+                    "required": ["name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "create_draft",
                 "description": "创建新草稿。返回 draft_id。",
                 "parameters": {"type": "object", "properties": {}}
@@ -628,13 +891,16 @@ def api_chat():
             "type": "function",
             "function": {
                 "name": "add_video",
-                "description": "添加视频到草稿。",
+                "description": "添加视频到草稿。默认接在主视频轨道('video_main')末尾按顺序拼接。要把某段视频作为'补充素材/花絮/B-roll'叠加显示在主视频的某个时间点上方时，必须指定不同的 track_name 和该素材应出现的 target_start，否则会和主视频挤在同一条轨道上互相覆盖。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "description": "视频URL或路径"},
-                        "start": {"type": "number", "description": "源开始秒", "default": 0},
-                        "end": {"type": "number", "description": "源结束秒"}
+                        "start": {"type": "number", "description": "源视频截取起始秒(素材文件内的秒数)", "default": 0},
+                        "end": {"type": "number", "description": "源视频截取结束秒(素材文件内的秒数)"},
+                        "target_start": {"type": "number", "description": "这段素材在成片时间轴上应该出现的秒数(不是素材源文件的秒数)。不填=自动接在同名轨道已有内容末尾"},
+                        "track_name": {"type": "string", "description": "轨道名，默认 'video_main'(主视频轨道)。叠加补充素材时用不同的名字，如 'broll_1'"},
+                        "relative_index": {"type": "integer", "description": "轨道层级，数值越大越靠上层显示。叠加在主视频上方要设成比主视频轨道更高的值(如 1)，否则会被主视频盖住而不是盖住主视频"}
                     },
                     "required": ["url"]
                 }
@@ -644,15 +910,73 @@ def api_chat():
             "type": "function",
             "function": {
                 "name": "add_text",
-                "description": "添加文字到草稿。",
+                "description": "添加文字到草稿；不止字幕，也可用于标题/水印/角标等任意文字标识——通过 track_name 区分轨道、transform_x/transform_y 控制画面位置。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "text": {"type": "string", "description": "文字内容"},
                         "start": {"type": "number", "description": "开始秒"},
-                        "end": {"type": "number", "description": "结束秒"}
+                        "end": {"type": "number", "description": "结束秒"},
+                        "track_name": {"type": "string", "description": "轨道名，默认 'text_main'（字幕轨）；做独立文字标识/标题/水印时用不同轨道名（如 'label_1'）避免和字幕冲突叠压"},
+                        "transform_x": {"type": "number", "description": "水平位置，-1(左)~1(右)，0为居中，默认0"},
+                        "transform_y": {"type": "number", "description": "垂直位置，-1(底)~1(顶)，默认-0.8（画面下方，字幕常用位置）；标题/角标常用 0.7~0.9（画面上方）"},
+                        "font_size": {"type": "number", "description": "字号，默认12"},
+                        "font_color": {"type": "string", "description": "字体颜色，十六进制，默认 '#FFFFFF'"},
+                        "background_color": {"type": "string", "description": "文字背景色（如水印底色），默认不显示背景"},
+                        "background_alpha": {"type": "number", "description": "背景不透明度 0.0~1.0，默认0（无背景，纯色块不是毛玻璃/模糊效果——本工具不支持真实的背景模糊/毛玻璃特效）"},
+                        "intro_animation": {"type": "string", "description": "入场动画名，如 'Random_Typewriter'(打字机)/'Blur_to_the_Left'(左移模糊)/'Bounce_from_TR'(右上弹入) 等，需精确匹配预置动画名，不确定就别填"},
+                        "outro_animation": {"type": "string", "description": "出场动画名，同 intro_animation 命名规则，如 'Blur_to_the_Left'/'Horizontal_Close' 等，不确定就别填"}
                     },
                     "required": ["text", "start", "end"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_text_animations",
+                "description": "查询 add_text 可用的入场/出场动画名字列表，调用 add_text 的 intro_animation/outro_animation 前先查一下，别瞎猜名字。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["intro", "outro"], "description": "查入场动画还是出场动画"}
+                    },
+                    "required": ["kind"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "add_audio",
+                "description": "给草稿添加背景音乐/音频。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "音频URL或本地路径"},
+                        "start": {"type": "number", "description": "插入到草稿时间轴的开始秒", "default": 0},
+                        "end": {"type": "number", "description": "结束秒（不填=到音频末尾）"},
+                        "volume": {"type": "number", "description": "音量 0-1", "default": 0.5}
+                    },
+                    "required": ["url"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "add_image",
+                "description": "给草稿添加图片（作为一段画面）。默认接在图片轨道('image_main')末尾顺序展示。要把图片作为'补充素材'叠加显示在主视频的某个时间点上方时，指定 start/end 为该时间点在成片时间轴上的秒数（而不是省略靠自动接龙），必要时指定更高的 relative_index 确保盖住主视频画面。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "图片URL或本地路径"},
+                        "start": {"type": "number", "description": "插入到草稿时间轴的开始秒。不填=自动接在图片轨道已有内容末尾"},
+                        "end": {"type": "number", "description": "结束秒。不填=从 start 起默认展示 3 秒"},
+                        "track_name": {"type": "string", "description": "轨道名，默认 'image_main'。跟主视频叠加时可以保持默认(图片轨默认就在视频轨上方)"},
+                        "relative_index": {"type": "integer", "description": "轨道层级，数值越大越靠上层显示"}
+                    },
+                    "required": ["url"]
                 }
             }
         },
@@ -672,7 +996,60 @@ def api_chat():
                 "parameters": {"type": "object", "properties": {}}
             }
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "render_status",
+                "description": "查询一个渲染任务的进度/是否完成。render 工具返回的 task_id 传进来查。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"task_id": {"type": "string", "description": "render 工具返回的任务ID"}},
+                    "required": ["task_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_drafts",
+                "description": "列出磁盘上已保存的草稿（名称/时长/修改时间）。用户问'有哪些草稿/之前做的视频'时调用。",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_templates",
+                "description": "列出可用的视频模板及每个模板需要填的变量名。用户想用模板快速做视频时先调用这个看有什么模板。",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_template",
+                "description": "用预设模板一次性生成草稿（自动创建草稿+按模板组装所有场景+保存，返回 draft_id）。适合用户说'用XX模板做个视频'时调用。先用 list_templates 确认模板名和需要的变量。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "template": {"type": "string", "description": "模板文件名（不含.yaml），如 product_intro"},
+                        "variables": {"type": "object", "description": "模板变量填充，key 为变量名（如 product_name/demo_video）"}
+                    },
+                    "required": ["template", "variables"]
+                }
+            }
+        },
     ]
+
+    def _get_internal(endpoint):
+        """内部 API 调用 (HTTP 自调, GET). 用法同 _post_internal, 见其注释."""
+        try:
+            url = f"{config.API_BASE}/{endpoint}"
+            with requests.Session() as s:
+                r = s.get(url, timeout=30)
+                return r.json()
+        except Exception as e:
+            return {'error': str(e)}
 
     def _find_analysis(path):
         """按 path 查分析缓存. 容忍正/反斜杠差异 (前端传 /, 缓存可能存 \\)."""
@@ -683,6 +1060,43 @@ def api_chat():
         alt = path.replace('/', '\\') if '/' in path else path.replace('\\', '/')
         return get_analysis(alt)
 
+    def _resolve_asset_url(u):
+        """把 LLM 传的素材标识解析成本地绝对路径 (正斜杠, pyJianYingDraft/ffprobe 都认).
+        LLM 有时只传文件名 (如 'VID_20260819_102125.mp4') 而不是完整路径 —— 这种裸名会让
+        VectCutAPI 的 update_media_metadata ffprobe 探不到文件 → 素材时长 0 → 主视频
+        segment 零时长 → 渲染出来黑屏无声 (叠加段因显式传了 start/end 不受影响).
+        规则: http(s)/file 协议不动; 已存在的绝对路径不动; 其余按文件名去上传目录找."""
+        if not u:
+            return u
+        if u.startswith(('http://', 'https://', 'file://')):
+            return u
+        if os.path.isabs(u) and os.path.isfile(u):
+            return u.replace('\\', '/')
+        base = os.path.basename(u.replace('\\', '/'))
+        for d in (config.UPLOAD_DIR, config.GUI_UPLOAD_DIR):
+            cand = os.path.join(d, base)
+            if os.path.isfile(cand):
+                resolved = cand.replace('\\', '/')
+                if resolved != u:
+                    print('[resolve_asset_url] %r -> %r' % (u, resolved), flush=True)
+                return resolved
+        return u
+
+    def _track_end_seconds(draft_id, track_name):
+        """查草稿里某条轨道当前已经铺到多少秒 —— add_video 不传 target_start 时用这个自动
+        接龙, 不用 agent 自己心算已加了多少段/每段多长(算错了同一时间点会撞车覆盖)。"""
+        r = _post_internal('query_script', {'draft_id': draft_id})
+        try:
+            script = json.loads(r.get('output') or '{}')
+            track = next((t for t in script.get('tracks', []) if t.get('name') == track_name), None)
+            if not track or not track.get('segments'):
+                return 0.0
+            end_us = max(s['target_timerange']['start'] + s['target_timerange']['duration']
+                         for s in track['segments'])
+            return round(end_us / 1_000_000, 3)
+        except Exception:
+            return 0.0
+
     def execute_tool(name, args):
         """执行工具调用，返回结果字符串"""
         import re as _re
@@ -690,6 +1104,8 @@ def api_chat():
         result = {}
 
         if name == 'list_resources':
+            import main_video_store
+            main_path = (main_video_store.get() or {}).get('path')
             items = []
             for path in asset_paths:
                 fname = os.path.basename(path)
@@ -697,9 +1113,52 @@ def api_chat():
                 ftype = 'video' if ext in ('.mp4','.mov','.avi','.mkv') else \
                         'image' if ext in ('.jpg','.png','.jpeg') else \
                         'audio' if ext in ('.mp3','.wav','.aac') else 'other'
-                analyzed = '已分析' if _find_analysis(path) else '未分析'
-                items.append(f'{fname} ({ftype}, {analyzed})')
+                analysis = _find_analysis(path)
+                analyzed = '已分析' if analysis else '未分析'
+                entry = f'{fname} ({ftype}, {analyzed}'
+                tags = analysis.get('tags') if analysis else None
+                if tags:
+                    entry += ', tags: ' + '/'.join(tags)
+                if path == main_path:
+                    entry += ', 主视频'
+                entry += ')'
+                items.append(entry)
             result = {'resources': items}
+
+        elif name == 'get_main_video':
+            import main_video_store
+            info = main_video_store.get()
+            if not info:
+                result = {'error': '还没有标记任何主视频，请让用户在素材面板里点"设为主视频"'}
+            else:
+                result = {'name': info['name'], 'path': info['path']}
+
+        elif name == 'search_by_tags':
+            keywords = [str(k).strip() for k in (args.get('keywords') or []) if str(k).strip()]
+            asset_set = set(asset_paths)
+            from asset_store import search_tags as _search_tags
+            matches = []
+            for m in _search_tags(keywords, type=args.get('type')):
+                if m['path'] not in asset_set:
+                    continue
+                hit = [k for k in keywords if any(k in t for t in m['tags'])]
+                matches.append({'name': m['name'], 'tags': m['tags'], 'matched_keywords': hit})
+            result = {'matches': matches, 'total_analyzed_scanned': sum(1 for p in asset_paths if _find_analysis(p))}
+
+        elif name == 'search_assets':
+            query = str(args.get('query') or '').strip()
+            asset_set = set(asset_paths)
+            from asset_store import search_text as _search_text
+            matches = []
+            for m in _search_text(query, type=args.get('type')):
+                if m['path'] not in asset_set:
+                    continue
+                matches.append({
+                    'name': m['name'], 'type': m['type'], 'tags': m['tags'],
+                    'duration': m['duration'], 'visual_snippet': m['visual'],
+                    'transcript_snippet': m['audio_text'],
+                })
+            result = {'matches': matches}
 
         elif name == 'get_resource_detail':
             fname = args.get('name', '')
@@ -708,11 +1167,12 @@ def api_chat():
                 return json.dumps({'error': f'未找到资源: {fname}'}, ensure_ascii=False)
             analysis = _find_analysis(path)
             if not analysis:
-                return json.dumps({'error': f'{fname} 尚未分析，请先在资源面板点分析按钮'}, ensure_ascii=False)
+                return json.dumps({'error': f'{fname} 尚未分析，请调用 analyze_resource 先分析'}, ensure_ascii=False)
             detail = {'filename': fname, 'path': path}
             meta = analysis.get('meta', {})
             detail['duration'] = meta.get('duration', 0)
             detail['resolution'] = f'{meta.get("width","?")}x{meta.get("height","?")}'
+            detail['tags'] = analysis.get('tags', [])
             # VLM
             visual = analysis.get('visual_analysis', '')
             try:
@@ -733,7 +1193,7 @@ def api_chat():
                 return json.dumps({'error': f'未找到: {fname}'}, ensure_ascii=False)
             analysis = _find_analysis(path)
             if not analysis:
-                return json.dumps({'error': f'{fname} 尚未分析'}, ensure_ascii=False)
+                return json.dumps({'error': f'{fname} 尚未分析，请调用 analyze_resource 先分析'}, ensure_ascii=False)
             audio = analysis.get('audio', {})
             if isinstance(audio, dict):
                 result = {
@@ -742,6 +1202,45 @@ def api_chat():
                 }
             else:
                 result = {'full_text': '(无语音)', 'segments': []}
+
+        elif name == 'analyze_resource':
+            fname = args.get('name', '')
+            path = next((p for p in asset_paths if fname in p), None)
+            if not path:
+                return json.dumps({'error': f'未找到资源: {fname}'}, ensure_ascii=False)
+            try:
+                ext = os.path.splitext(path)[1].lower()
+                if _ASSET_TYPE_BY_EXT.get(ext) == 'image':
+                    from perceive import perceive_image
+                    analysis = perceive_image(path)
+                else:
+                    from perceive import perceive_video
+                    analysis = perceive_video(path, do_asr=True, frame_count=4)
+                save_analysis(path, analysis)
+                result = {
+                    'ok': True,
+                    'analysis_mode': analysis.get('analysis_mode'),
+                    'duration': analysis.get('meta', {}).get('duration', 0),
+                }
+            except Exception as e:
+                result = {'error': str(e)}
+
+        elif name == 'split_shots':
+            fname = args.get('name', '')
+            path = next((p for p in asset_paths if fname in p), None)
+            if not path:
+                return json.dumps({'error': f'未找到资源: {fname}'}, ensure_ascii=False)
+            try:
+                import shot_split
+                shots = shot_split.split_shots(path, force=bool(args.get('force', False)))
+                result = {
+                    'ok': True,
+                    'shot_count': len(shots),
+                    'shots': [{'index': s['index'], 'start': s['start'], 'end': s['end'], 'duration': s['duration']}
+                              for s in shots],
+                }
+            except Exception as e:
+                result = {'error': str(e)}
 
         elif name == 'create_draft':
             r = _post_internal('create_draft', {'width': 1080, 'height': 1920})
@@ -753,20 +1252,72 @@ def api_chat():
 
         elif name == 'add_video':
             if not draft_id: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
-            d = {'draft_id': draft_id, 'video_url': args.get('url','')}
+            track_name = args.get('track_name') or 'video_main'
+            target_start = args.get('target_start')
+            if target_start is None:
+                target_start = _track_end_seconds(draft_id, track_name)
+            d = {'draft_id': draft_id, 'video_url': _resolve_asset_url(args.get('url','')),
+                 'track_name': track_name, 'target_start': target_start}
+            if args.get('relative_index') is not None: d['relative_index'] = args['relative_index']
             if args.get('start') is not None: d['start'] = args['start']
             if args.get('end') is not None: d['end'] = args['end']
             r = _post_internal('add_video', d)
-            result = {'ok': r.get('success', False)}
+            result = {'ok': r.get('success', False), 'track_name': track_name, 'target_start': target_start}
 
         elif name == 'add_text':
             if not draft_id: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
-            r = _post_internal('add_text', {
+            track_name = args.get('track_name') or 'text_main'
+            d = {
                 'draft_id': draft_id, 'text': args.get('text',''),
                 'start': args.get('start',0), 'end': args.get('end',5),
-                'font_size': 12, 'font_color': '#FFFFFF'
-            })
+                'track_name': track_name,
+                'font_size': args.get('font_size', 12),
+                'font_color': args.get('font_color', '#FFFFFF'),
+                'transform_x': args.get('transform_x', 0),
+                'transform_y': args.get('transform_y', -0.8),
+            }
+            if args.get('background_color') is not None: d['background_color'] = args['background_color']
+            if args.get('background_alpha') is not None: d['background_alpha'] = args['background_alpha']
+            if args.get('intro_animation'):
+                valid = _text_animation_names('intro')
+                if valid and args['intro_animation'] not in valid:
+                    return json.dumps({'error': f"intro_animation 名字不存在: {args['intro_animation']!r}，先调用 list_text_animations(kind='intro') 看合法名字"}, ensure_ascii=False)
+                d['intro_animation'] = args['intro_animation']
+            if args.get('outro_animation'):
+                valid = _text_animation_names('outro')
+                if valid and args['outro_animation'] not in valid:
+                    return json.dumps({'error': f"outro_animation 名字不存在: {args['outro_animation']!r}，先调用 list_text_animations(kind='outro') 看合法名字"}, ensure_ascii=False)
+                d['outro_animation'] = args['outro_animation']
+            r = _post_internal('add_text', d)
+            result = {'ok': r.get('success', False), 'track_name': track_name}
+
+        elif name == 'list_text_animations':
+            names = _text_animation_names(args.get('kind', 'intro'))
+            result = {'kind': args.get('kind'), 'names': names} if names else {'error': '动画名字表加载失败'}
+
+        elif name == 'add_audio':
+            if not draft_id: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
+            d = {'draft_id': draft_id, 'audio_url': _resolve_asset_url(args.get('url','')),
+                 'volume': args.get('volume', 0.5)}
+            if args.get('start') is not None: d['start'] = args['start']
+            if args.get('end') is not None: d['end'] = args['end']
+            r = _post_internal('add_audio', d)
             result = {'ok': r.get('success', False)}
+
+        elif name == 'add_image':
+            if not draft_id: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
+            track_name = args.get('track_name') or 'image_main'
+            start = args.get('start')
+            if start is None:
+                start = _track_end_seconds(draft_id, track_name)
+            end = args.get('end')
+            if end is None:
+                end = start + 3   # 没给时长默认展示 3 秒
+            d = {'draft_id': draft_id, 'image_url': _resolve_asset_url(args.get('url','')),
+                 'track_name': track_name, 'start': start, 'end': end}
+            if args.get('relative_index') is not None: d['relative_index'] = args['relative_index']
+            r = _post_internal('add_image', d)
+            result = {'ok': r.get('success', False), 'track_name': track_name, 'start': start, 'end': end}
 
         elif name == 'save_draft':
             if not draft_id: return json.dumps({'error': '没有草稿'}, ensure_ascii=False)
@@ -782,6 +1333,42 @@ def api_chat():
             else:
                 result = {'error': str(r)}
 
+        elif name == 'render_status':
+            r = _get_internal(f"render/status/{args.get('task_id','')}")
+            result = r if isinstance(r, dict) else {'error': str(r)}
+
+        elif name == 'list_drafts':
+            r = _get_internal('api/drafts')
+            if isinstance(r, list):
+                result = {'drafts': [
+                    {'name': d.get('name'), 'id': d.get('id'), 'duration': d.get('duration'),
+                     'modified': d.get('modified')} for d in r
+                ]}
+            else:
+                result = {'error': str(r)}
+
+        elif name == 'list_templates':
+            r = _get_internal('api/templates')
+            result = {'templates': r} if isinstance(r, list) else {'error': str(r)}
+
+        elif name == 'run_template':
+            r = _post_internal('api/templates/render', {
+                'template': args.get('template', ''),
+                'variables': args.get('variables', {}) or {},
+                'render': False,
+            })
+            if r.get('draft_id'):
+                draft_id = r['draft_id']
+                result = {'ok': True, 'draft_id': draft_id}
+            else:
+                result = {'error': str(r)}
+
+        else:
+            # 模型偶尔会吐出空/未知的 tool_call name (观察到 qwen 多轮工具调用时出现过).
+            # 明确报错而不是静默回空 dict, 否则模型会把"空结果"当成"调用成功但没内容"
+            # 继而自己编一个看起来合理的答案 —— 这比直接报错更危险.
+            return json.dumps({'error': f'未知工具: {name!r}'}, ensure_ascii=False)
+
         # 确保 result 是 dict, 再序列化
         if not isinstance(result, dict):
             result = {'raw': str(result)[:500]}
@@ -790,6 +1377,9 @@ def api_chat():
     def generate():
         nonlocal draft_id
         client = _OAI(api_key=QWEN_KEY, base_url=QWEN_URL)
+
+        # 先把 conversation_id 发给前端 (新建会话时前端还不知道 id, 后续消息才能带上它)
+        yield f"data: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
 
         # 简洁 system prompt (只列资源名，不列详情)
         resource_names = ', '.join(os.path.basename(p) for p in asset_paths) if asset_paths else '无'
@@ -800,20 +1390,41 @@ def api_chat():
 
 重要规则:
 1. 回答视频内容/文案问题时，调用 get_resource_detail 或 get_transcript 查询，不要编造
-2. 资源未分析时，告知用户先点分析按钮
-3. 引用语音内容时带时间戳
+2. 资源未分析时，直接调用 analyze_resource 自己触发分析，不要让用户去点界面按钮；分析完再继续
+3. 引用语音内容时带时间戳；但时间戳/文案必须直接来自工具返回的 segments，禁止自己编造或推测
 4. 保持简洁，中文回复
-5. 制作视频的标准流程: create_draft → add_video(url, start, end) → save_draft → render
-6. 当用户要求"渲染/导出/出片/出视频"时，保存草稿后必须调用 render 工具提交渲染，不要只说"可以渲染了"
-7. add_video 的 start/end 是源视频的截取起止秒数（如 start=0, end=10 取前10秒）"""
+5. 制作视频的标准流程: create_draft → add_video(url, start, end) → [可选 add_text/add_audio/add_image] → save_draft → render
+6. 当用户要求"渲染/导出/出片/出视频"时，保存草稿后必须调用 render 工具提交渲染，不要只说"可以渲染了"；渲染中可用 render_status 查进度
+7. add_video 的 start/end 是源视频的截取起止秒数（如 start=0, end=10 取前10秒）；target_start 才是成片时间轴上的位置，不填会自动接在同名轨道末尾
+7b. "主视频"（贯穿全片的主体素材）始终放在 add_video 默认的 'video_main' 轨道，按顺序多次调用即可自动接龙；"补充素材/花絮/B-roll"（叠加在主视频某个时间点上方的片段）必须用不同的 track_name（如 'broll_1'）并显式指定 target_start=该素材要出现的成片秒数，同时给一个比主视频轨道更高的 relative_index（如 1），否则会被主视频盖住或跟主视频撞在同一条轨道上
+8. 用户想用模板快速做视频时，先 list_templates 看有哪些模板和需要填的变量，再 run_template
+9. 用户问"有哪些草稿/之前做的视频"时调用 list_drafts
+10. 任何工具调用返回 error 或结果为空时，必须原样告知用户失败原因，绝不能假装成功或编造一个看起来合理的分析结果顶替
+11. 按内容/主题找素材(如"找一个有山的视频")时，优先用 search_by_tags 关键词粗筛(SQLite 索引查询，不耗 token，毫秒级返回)，缩小候选范围后再对具体文件调用 get_resource_detail/get_transcript 看全文细节确认；标签查不到、或用户用整句话描述要找的内容时，改用 search_assets 全文检索(搜文件名/画面描述/口播文案/标签)兜底；素材没几个再退化成直接读全部资源详情
+12. 用户要求"分镜/拆镜头"时调用 split_shots，拆完告诉用户拆出了几个镜头，各镜头的起止时间；不要自己编造镜头数量
+13. 用户说"主视频/这次的视频/最新录的"而不指名具体文件时，先调用 get_main_video 解析出实际文件名再继续，别直接猜或反复问用户文件名
+14. add_text 不止能加字幕，也能加标题/水印/角标等文字标识：字幕用默认 track_name='text_main'、transform_y=-0.8（画面下方）；独立的标题/标识要换一个不同的 track_name（如 'label_1'）避免和字幕叠压覆盖，并按需调整 transform_x/transform_y 到画面其他位置（如 0.8 靠上做标题）；background_alpha 只是纯色块透明度，不是模糊/毛玻璃特效，别答应用户做不到的效果；要用入场/出场动画时先调 list_text_animations 查真实存在的动画名，不要凭印象瞎填"""
+
+        # 多轮记忆: 历史里只取 user/assistant 的文本内容喂给 LLM 当上下文
+        # (tool 卡片只是给用户看的执行细节, 不需要还原 tool_call_id 链路); 截断最近 20 条防止越聊越贵
+        history_for_llm = [
+            {'role': m['role'], 'content': m['content']}
+            for m in prior_messages
+            if m.get('role') in ('user', 'assistant') and m.get('content')
+        ][-20:]
 
         messages = [
             {"role": "system", "content": system},
+            *history_for_llm,
             {"role": "user", "content": message},
         ]
 
-        # 多轮工具调用 (最多 8 轮 — 覆盖 list→detail→create→add→save→render 完整链路)
-        for _ in range(8):
+        # 本轮展示用的消息日志 (供存回 chat_store, 前端历史/切换会话时按这个渲染)
+        turn_log = list(prior_messages)
+        turn_log.append({'role': 'user', 'content': message})
+
+        # 多轮工具调用 (最多 12 轮 — 覆盖 analyze→list→detail→create→add(video/text/audio/image)→save→render→status 完整链路)
+        for _ in range(12):
             try:
                 resp = client.chat.completions.create(
                     model=LLM_MODEL,
@@ -824,6 +1435,7 @@ def api_chat():
                 )
             except Exception as e:
                 yield f"data: {json.dumps({'text': f'错误: {e}'}, ensure_ascii=False)}\n\n"
+                turn_log.append({'role': 'assistant', 'content': f'错误: {e}'})
                 break
 
             msg = resp.choices[0].message
@@ -832,6 +1444,7 @@ def api_chat():
             # 有文本输出 → 流式发送
             if msg.content:
                 yield f"data: {json.dumps({'text': msg.content}, ensure_ascii=False)}\n\n"
+                turn_log.append({'role': 'assistant', 'content': msg.content})
 
             # 没有工具调用 → 结束
             if not msg.tool_calls:
@@ -847,9 +1460,13 @@ def api_chat():
 
                 # 通知前端工具执行结果
                 yield f"data: {json.dumps({'tool': fn_name, 'args': fn_args, 'result': tool_result_obj}, ensure_ascii=False)}\n\n"
+                turn_log.append({
+                    'role': 'tool', 'content': f'Invoked: {fn_name}',
+                    'toolDetails': {'tool': fn_name, 'args': fn_args, 'result': tool_result_obj},
+                })
 
                 # 如果是 create_draft，更新 draft_id
-                if fn_name == 'create_draft':
+                if fn_name in ('create_draft', 'run_template'):
                     new_id = tool_result_obj.get('draft_id') or tool_result_obj.get('output', {}).get('draft_id')
                     if new_id:
                         draft_id = new_id
@@ -863,9 +1480,57 @@ def api_chat():
 
             # 继续下一轮，让 LLM 基于工具结果继续回答
 
+        try:
+            chat_store.save_messages(conversation_id, turn_log, draft_id)
+        except Exception as e:
+            print('[chat] 会话保存失败: %s' % e, flush=True)
+
         yield "data: [DONE]\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+@app.route('/api/chat/conversations', methods=['GET'])
+def api_chat_conversations_list():
+    """历史会话列表 (标题/草稿/时间), 供 Chat 面板侧栏用. 不含 messages 正文."""
+    import chat_store
+    return jsonify(chat_store.list_all())
+
+
+@app.route('/api/chat/conversations', methods=['POST'])
+def api_chat_conversations_create():
+    """新建一条空会话 (New Chat 按钮)."""
+    import chat_store
+    data = request.json or {}
+    cid = chat_store.create(draft_id=data.get('draft_id'))
+    return jsonify({'id': cid})
+
+
+@app.route('/api/chat/conversations/<cid>', methods=['GET'])
+def api_chat_conversations_get(cid):
+    """取一条会话完整消息 (切换会话时用来恢复聊天记录)."""
+    import chat_store
+    conv = chat_store.get(cid)
+    if not conv:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify(conv)
+
+
+@app.route('/api/chat/conversations/<cid>', methods=['DELETE'])
+def api_chat_conversations_delete(cid):
+    import chat_store
+    chat_store.delete(cid)
+    return jsonify({'ok': True})
+
+
+def _text_animation_names(kind):
+    """返回 CapCut 文字入场/出场动画的合法名字列表 (供 agent 校验/枚举, 避免瞎猜)."""
+    try:
+        from pyJianYingDraft.metadata.capcut_text_animation_meta import CapCut_Text_intro, CapCut_Text_outro
+        enum_cls = CapCut_Text_intro if kind == 'intro' else CapCut_Text_outro
+        return sorted(m.name for m in enum_cls)
+    except Exception:
+        return []
 
 
 def _post_internal(endpoint, data=None):
@@ -962,6 +1627,39 @@ def api_localsend_stop():
                         'received_count': len(received)})
     except Exception as e:
         return jsonify({'running': False, 'error': str(e)}), 500
+
+
+@app.route('/api/settings', methods=['GET'])
+def api_settings_get():
+    """当前 LLM/ASR 配置 (密钥脱敏, 附 configured 标记)"""
+    import settings_store
+    return jsonify(settings_store.get_settings())
+
+
+@app.route('/api/settings', methods=['POST'])
+def api_settings_save():
+    """保存配置到 .env + 热更新 (密钥留空 = 不修改)"""
+    import settings_store
+    data = request.json or {}
+    return jsonify(settings_store.save_settings(data))
+
+
+@app.route('/api/settings/test', methods=['POST'])
+def api_settings_test():
+    """用给定(或已保存/默认)的值实测连通性, 不落盘"""
+    import settings_store
+    data = request.json or {}
+    target = data.get('target')
+    if target == 'llm':
+        api_key = data.get('QWEN_API_KEY') or settings_store.effective_value('QWEN_API_KEY')
+        base_url = data.get('QWEN_BASE_URL') or settings_store.effective_value('QWEN_BASE_URL')
+        model = data.get('QWEN_MODEL') or settings_store.effective_value('QWEN_MODEL')
+        return jsonify(settings_store.test_llm(api_key, base_url, model))
+    if target == 'asr':
+        endpoint = data.get('ASR_ENDPOINT') or settings_store.effective_value('ASR_ENDPOINT')
+        api_key = data.get('ASR_API_KEY') or settings_store.effective_value('ASR_API_KEY')
+        return jsonify(settings_store.test_asr(endpoint, api_key))
+    return jsonify({'ok': False, 'error': 'unknown target'}), 400
 
 
 # ============================================================ 静态文件 (React 构建产物)

@@ -75,12 +75,15 @@ def inject_draft(src_draft_dir, new_name=None):
         if isinstance(c, dict) and 'id' in c:
             c['id'] = new_id
         # 关键修复: 剪映导出时, 若视频素材 path/media_path 为空(无法解析素材文件),
-        # 会静默中止导出 —— 点了"导出"确认后弹窗关闭但渲染引擎根本不启动(temp_bytes 全程 0).
-        # 源草稿(如 testrd1)的素材路径往往为空(由 copy_draft_external 创建时被抹掉),
-        # 但素材文件本身存在于草稿的 assets/video/ 子目录. 这里把每个 video/audi 素材的
-        # path 改写为新草稿里该文件的绝对路径(正斜杠, 与剪映自身格式一致), 让导出能定位素材.
+        # 会静默中止导出 —— 点了"导出"确认后弹窗关闭但渲染引擎根本不启动(temp_bytes 全程 0),
+        # 之后重试连导出弹窗都不再弹出(剪映内部卡在失败态), 整个任务误报为点击问题.
+        # 源草稿素材路径为空有两种来源: (a) copy_draft_external 创建时被抹掉, 素材文件还在
+        # 草稿的 assets/video|audio/ 子目录; (b) 生成器只写了 remote_url(原始上传文件名)引用,
+        # 素材文件在服务端上传目录 render_uploads/ 里. 两种都回填成新草稿内/本地的绝对路径
+        # (正斜杠, 与剪映自身格式一致), 让导出能定位素材.
         mats = c.get('materials', {}) if isinstance(c, dict) else {}
         for mkey in ('videos', 'audios'):
+            sub = 'video' if mkey == 'videos' else 'audio'
             for mat in mats.get(mkey, []) or []:
                 mname = mat.get('material_name')
                 if not mname:
@@ -89,18 +92,86 @@ def inject_draft(src_draft_dir, new_name=None):
                 cur = mat.get('path') or mat.get('media_path') or ''
                 if cur and os.path.isfile(cur.replace('/', os.sep)):
                     continue
-                # 尝试 assets/video 与 assets/audio 子目录
-                for sub in ('video', 'audio'):
-                    cand = os.path.join(new_fold, 'assets', sub, mname)
-                    if os.path.isfile(cand):
-                        fwd = cand.replace('\\', '/')
-                        mat['path'] = fwd
-                        if not mat.get('media_path'):
-                            mat['media_path'] = fwd
-                        break
+                # (a) 素材已在草稿 assets 子目录
+                cand = os.path.join(new_fold, 'assets', sub, mname)
+                if not os.path.isfile(cand):
+                    # (b) 按原始上传文件名(remote_url)去上传目录找, 找到就拷进草稿 assets
+                    # (拷贝而非直接引用: 草稿自包含, 上传目录后续清理也不影响渲染)
+                    remote = (mat.get('remote_url') or '').strip()
+                    rbase = os.path.basename(remote.replace('\\', '/')) if remote else ''
+                    if rbase:
+                        src_cand = os.path.join(config.UPLOAD_DIR, rbase)
+                        if os.path.isfile(src_cand):
+                            os.makedirs(os.path.dirname(cand), exist_ok=True)
+                            shutil.copyfile(src_cand, cand)
+                if os.path.isfile(cand):
+                    fwd = cand.replace('\\', '/')
+                    mat['path'] = fwd
+                    if not mat.get('media_path'):
+                        mat['media_path'] = fwd
+        # 关键修复 2: 零时长视频段. 生成器拿不到素材时长时(ffprobe 不了裸文件名 remote_url),
+        # 会留下 source/target duration=0 的 segment —— 剪映渲染该段就是纯黑屏+无声
+        # (叠加段因显式传了 start/end 区间正常, 只有主视频这种"自动取全长"的段中招).
+        # 路径回填后用 ffprobe 探真实时长, 把区间补成 [start, min(素材时长, 成片时间线)].
+        def _probe_dur_us(path):
+            try:
+                out = subprocess.check_output(
+                    ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                     '-of', 'csv=p=0', path], stderr=subprocess.STDOUT).decode()
+                return int(float(out.strip().splitlines()[0]) * 1000000)
+            except Exception:
+                return 0
+        mat_by_id = {m.get('id'): m for m in (mats.get('videos') or [])}
+        timeline_us = c.get('duration') or 0
+        for tr in (c.get('tracks') or []):
+            if tr.get('type') != 'video':
+                continue
+            for seg in (tr.get('segments') or []):
+                st = seg.get('source_timerange') or {}
+                tt = seg.get('target_timerange') or {}
+                if (st.get('duration') or 0) > 0 and (tt.get('duration') or 0) > 0:
+                    continue
+                m = mat_by_id.get(seg.get('material_id'))
+                if not m or not (m.get('path') and os.path.isfile(m['path'])):
+                    continue
+                dur_us = _probe_dur_us(m['path'])
+                if dur_us <= 0:
+                    continue
+                # 按成片时间线截断: 主视频不该超出字幕/其他轨道定义的结尾 (探到的源常比成片长)
+                if 0 < timeline_us < dur_us:
+                    dur_us = timeline_us
+                if (m.get('duration') or 0) <= 0:
+                    m['duration'] = dur_us
+                seg['source_timerange'] = {'start': st.get('start') or 0, 'duration': dur_us}
+                seg['target_timerange'] = {'start': tt.get('start') or 0, 'duration': dur_us}
+                log('修复零时长视频段: %s -> %.1fs' % (m.get('material_name'), dur_us / 1000000))
         json.dump(c, open(cp, 'w', encoding='utf-8'), ensure_ascii=False)
     log('注入草稿: %s -> %s (id=%s)' % (src_name, new_name, new_id))
     return dst
+
+def _cleanup_injected_draft(draft_name):
+    """删除注入到剪映草稿根目录的草稿文件夹 + 同步 root_meta_info.json 条目.
+    成功与失败路径都要调 (失败不清理会残留 rd* 草稿, 下次启动弹"草稿丢失"对话框且
+    首页越来越乱). 任何异常只记日志不抛出."""
+    import shutil
+    try:
+        injected = os.path.join(DRAFT_ROOT, draft_name)
+        if os.path.exists(injected):
+            shutil.rmtree(injected, ignore_errors=True)
+            log('已清理注入草稿: %s' % draft_name)
+        rm_path = os.path.join(DRAFT_ROOT, 'root_meta_info.json')
+        if os.path.exists(rm_path):
+            m = json.load(open(rm_path, encoding='utf-8'))
+            before = len(m.get('all_draft_store', []))
+            m['all_draft_store'] = [d for d in m.get('all_draft_store', [])
+                                    if d.get('draft_name') != draft_name]
+            m['draft_ids'] = len(m['all_draft_store'])
+            if len(m['all_draft_store']) < before:
+                json.dump(m, open(rm_path, 'w', encoding='utf-8'), ensure_ascii=False)
+                log('已同步 root_meta (移除 %s)' % draft_name)
+    except Exception as e:
+        log('清理注入草稿异常: %s' % e)
+
 
 def find_main_pid():
     """主 UI 进程 = 有窗口标题的那个 JianyingPro.exe"""
@@ -730,6 +801,23 @@ class Driver:
             time.sleep(1.5)
         log('等待渲染超时'); return False
 
+    def _final_mp4_exists(self, draft_name):
+        """直接查最终 mp4 是否已生成(按草稿名前缀匹配, >100KB 算有效).
+        wait_render_done 依赖"文件出现后再连续采样大小稳定", 大文件渲染时文件落盘/搬运
+        可能压着超时线, 采样追不上就误判失败 —— 这个只查存在性, 作最终兜底判定."""
+        try:
+            files = [f for f in os.listdir(config.VIDEOS_DIR)
+                     if f.endswith('.mp4') and f.startswith(draft_name)]
+        except Exception:
+            return False
+        for f in files:
+            try:
+                if os.path.getsize(os.path.join(config.VIDEOS_DIR, f)) > 100000:
+                    return True
+            except Exception:
+                continue
+        return False
+
     def wait_render_start(self, timeout=15):
         """等 temp 文件出现 (渲染开始). 用于 confirm 后验证点中了."""
         TEMP = os.path.join(config.VIDEOS_DIR, '.__jianying_export_temp_folder__')
@@ -883,7 +971,7 @@ class Driver:
         st = self.script.exports_sync.status()
         log('  dev=%s' % st.get('curDev'))
         if not st.get('curDev'):
-            log('dev 未获取, 中止'); return False
+            log('dev 未获取, 中止'); _cleanup_injected_draft(draft_name); return False
 
         # 2. 打开草稿: 桌面模式按草稿名在首页网格里定位卡片点击(不再用固定 caps['card'] 坐标),
         # 前台模式用搜索
@@ -907,7 +995,7 @@ class Driver:
                 log('  草稿未打开, 重试')
                 time.sleep(1)
             if not opened:
-                log('草稿卡片8次未打开, 中止'); return False
+                log('草稿卡片8次未打开, 中止'); _cleanup_injected_draft(draft_name); return False
         else:
             log('点放大镜'); self.click_global2(caps['search_btn']['lx'], caps['search_btn']['ly'])
             time.sleep(1)
@@ -941,12 +1029,25 @@ class Driver:
             log('  modal win=%s (showCount=%d)' % (st.get('win'), st.get('showCount')))
             log('点确认按钮(modal)'); self.click_modal_button(['导出'], caps['confirm']['lx'], caps['confirm']['ly'])
             emit_progress('confirm', 60)
-            # 短等看 mp4 是否开始生成 (20s)
-            if self.wait_render_done(draft_name, timeout=20):
+            # 等渲染完成. 之前用 20s 短等: 大草稿(如 141MB 输出)编码 ~18s + 落盘/搬运耗时,
+            # wait_render_done 要文件出现后再连续 2 次采样大小不变(~4.5s)才判完成, 20s 会
+            # 差几十秒误判"未触发渲染"→ 重试点导出(此时剪映已进入完成态弹不出导出框)→ 整轮
+            # 误报失败, 但 mp4 其实已生成. wait_render_done 成功即刻返回, 放长超时不拖慢成功路径.
+            if self.wait_render_done(draft_name, timeout=90):
+                ok = True; break
+            # 兜底: wait 超时不等于失败 —— 直接查最终 mp4 是否已存在(>100KB 即算),
+            # 避免上面说的"文件刚好压线生成完但采样没追上"的误判.
+            if draft_name and self._final_mp4_exists(draft_name):
+                log('  ✓ wait 超时但 mp4 已存在, 判定成功')
                 ok = True; break
             log('  ⚠ confirm 未触发渲染 (attempt %d), 重新点导出' % (attempt + 1))
         if not ok:
-            log('confirm 4次未触发渲染, 中止'); return False
+            # 最终兜底: 4 轮都没等到也要再直接查一次文件, 防止把已成功的渲染误报为失败.
+            if draft_name and self._final_mp4_exists(draft_name):
+                log('  ✓ 重试循环结束后发现 mp4 已存在, 判定成功')
+                ok = True
+            else:
+                log('confirm 4次未触发渲染, 中止'); _cleanup_injected_draft(draft_name); return False
         emit_progress('done', 100)
 
         # 4. 关闭完成提示 (完成窗口 modal) + 关编辑器回首页
@@ -964,24 +1065,7 @@ class Driver:
             time.sleep(2)
 
         # 5. 清理注入的草稿 (文件夹 + root_meta 条目, 避免下次启动弹"丢失"对话框)
-        try:
-            injected = os.path.join(DRAFT_ROOT, draft_name)
-            if os.path.exists(injected):
-                shutil.rmtree(injected, ignore_errors=True)
-                log('已清理注入草稿: %s' % draft_name)
-            # 同步 root_meta_info.json (移除该草稿条目, 否则下次启动弹丢失对话框)
-            rm_path = os.path.join(DRAFT_ROOT, 'root_meta_info.json')
-            if os.path.exists(rm_path):
-                m = json.load(open(rm_path, encoding='utf-8'))
-                before = len(m.get('all_draft_store', []))
-                m['all_draft_store'] = [d for d in m.get('all_draft_store', [])
-                                        if d.get('draft_name') != draft_name]
-                m['draft_ids'] = len(m['all_draft_store'])
-                if len(m['all_draft_store']) < before:
-                    json.dump(m, open(rm_path, 'w', encoding='utf-8'), ensure_ascii=False)
-                    log('已同步 root_meta (移除 %s)' % draft_name)
-        except Exception as e:
-            log('清理 root_meta 异常: %s' % e)
+        _cleanup_injected_draft(draft_name)
 
         return ok
 
