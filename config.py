@@ -23,6 +23,10 @@ RENDER_SERVER_HOST = os.environ.get('RENDER_SERVER_HOST', '0.0.0.0')
 RENDER_SERVER_PORT = _int('RENDER_SERVER_PORT', 9002)
 # 内部自调用基址 (chat 工具 → 自身 REST 端点)
 API_BASE = os.environ.get('API_BASE', f'http://127.0.0.1:{RENDER_SERVER_PORT}')
+# BrowserSkill CLI (发布视频到视频号/抖音/小红书用). 默认装在 ~/.local/bin; 服务进程的 PATH
+# 不一定包含它, 显式落绝对路径兜底.
+_bsk_default = os.path.join(os.path.expanduser('~'), '.local', 'bin', 'bsk.exe')
+BSK_BIN = os.environ.get('BSK_BIN', _bsk_default if os.path.isfile(_bsk_default) else 'bsk')
 # CORS 允许来源 (逗号分隔)。前端由本服务同源托管, 仅 Vite dev 需要。留空 = 不添加 CORS 头
 CORS_ALLOW_ORIGINS = [o.strip() for o in os.environ.get(
     'CORS_ALLOW_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173').split(',') if o.strip()]

@@ -39,11 +39,18 @@ _repro*.txt
 chat_test_out.txt
 2026-*.txt
 render_*.log
+# Frida/Qt UI-automation diagnostic probes & screenshot dumps
+qml_tree.js
+v15_shots/
+nul
 
 # Machine-local runtime data
 calib.json
 test_draft.zip
 tasks.db
+chats.db
+assets.db
+main_video.json
 
 # Media & Uploads (runtime data)
 gui_uploads/*
@@ -74,3 +81,6 @@ Thumbs.db
 .vscode/
 .idea/
 .claude/
+
+# BrowserSkill 外部仓库 (发布功能用, 不入库)
+BrowserSkill/

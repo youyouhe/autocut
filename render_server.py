@@ -503,6 +503,14 @@ def api_memory_analysis_list():
     return jsonify(list_all_analysis())
 
 
+@app.route('/api/build-marker', methods=['GET'])
+def api_build_marker():
+    """诊断用: 验证运行中的进程加载的是不是最新代码."""
+    import datetime
+    return jsonify({'marker': 'cors-fix-v1', 'pid': os.getpid(),
+                    'now': datetime.datetime.now().isoformat()})
+
+
 @app.route('/api/video/serve', methods=['GET'])
 def api_video_serve():
     """从内存缓存提供素材字节 (≤50MB 零磁盘 IO; 视频/音频/图片都走这个, 名字是历史遗留).
@@ -516,6 +524,9 @@ def api_video_serve():
     if not config.is_allowed_path(path):
         return jsonify({'error': 'path not allowed'}), 403
     mimetype = mimetypes.guess_type(path)[0] or 'application/octet-stream'
+    # CORS: 发布功能要用 —— 视频号/抖音/小红书的上传页里, 由 bsk 注入的 JS 需要从本服务
+    # fetch mp4 再 DataTransfer 塞进 <input type=file> (bsk 无原生文件上传命令), 跨源必带 CORS.
+    cors = {'Access-Control-Allow-Origin': '*'}
     # 尝试载入内存
     maybe_load_video(path)
     data = get_video_bytes(path)
@@ -524,9 +535,12 @@ def api_video_serve():
         return Response(data, mimetype=mimetype,
                         headers={'Content-Length': str(len(data)),
                                  'Cache-Control': 'max-age=3600',
-                                 'X-From-RAM': 'true'})
+                                 'X-From-RAM': 'true',
+                                 'Access-Control-Allow-Origin': '*'})
     # 太大不在内存, 走磁盘
-    return send_file(path, mimetype=mimetype)
+    resp = send_file(path, mimetype=mimetype)
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    return resp
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -1000,11 +1014,31 @@ def api_chat():
             "type": "function",
             "function": {
                 "name": "render_status",
-                "description": "查询一个渲染任务的进度/是否完成。render 工具返回的 task_id 传进来查。",
+                "description": "查询一个渲染任务的进度/是否完成。render 工具返回的 task_id 传进来查。"
+                               "wait=true 时服务端会阻塞等待(约25秒/次)直到状态变化或完成再返回 —— 自动监控时用它, "
+                               "免得连续空查; 反复调用直到 status 变为 done/error 即完成监控。",
                 "parameters": {
                     "type": "object",
-                    "properties": {"task_id": {"type": "string", "description": "render 工具返回的任务ID"}},
+                    "properties": {"task_id": {"type": "string", "description": "render 工具返回的任务ID"},
+                                   "wait": {"type": "boolean", "description": "服务端等待到状态变化再返回(默认false立即返回)"}},
                     "required": ["task_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "bsk_run",
+                "description": "执行一条 BrowserSkill(bsk) CLI 命令, 驱动用户已登录的浏览器完成网页操作"
+                               "(如把渲染好的视频发布到视频号/抖音/小红书). 命令原样传给 bsk, 返回 stdout/stderr. "
+                               "标准生命周期: bsk session start 拿会话id → 各命令都带 --session <id> → 最后必须 bsk session stop <id>.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "bsk 子命令(不含 bsk 前缀), 如 'session start' / 'navigate https://... --session ab12' / 'snapshot --session ab12'"},
+                        "timeout": {"type": "number", "description": "秒, 默认 60; request-help 等待用户时给 300"}
+                    },
+                    "required": ["command"]
                 }
             }
         },
@@ -1334,8 +1368,44 @@ def api_chat():
                 result = {'error': str(r)}
 
         elif name == 'render_status':
-            r = _get_internal(f"render/status/{args.get('task_id','')}")
-            result = r if isinstance(r, dict) else {'error': str(r)}
+            task_id = args.get('task_id', '')
+            if args.get('wait'):
+                # 服务端阻塞等待: 每次调用最多等 ~25s, 直到状态/阶段变化或终态再返回.
+                # 给 agent 自动监控用 —— 没有它 agent 只能连续空转查询 (LLM 侧无法 sleep).
+                waited = 0.0
+                r = None
+                prev = None
+                while waited < 25:
+                    r = _get_internal(f"render/status/{task_id}")
+                    cur = (r.get('status'), (r.get('progress') or {}).get('stage')) if isinstance(r, dict) else None
+                    if not isinstance(r, dict) or r.get('status') in ('done', 'error') or (prev is not None and cur != prev):
+                        break
+                    prev = cur
+                    time.sleep(2.5)
+                    waited += 2.5
+                result = r if isinstance(r, dict) else {'error': str(r)}
+            else:
+                r = _get_internal(f"render/status/{task_id}")
+                result = r if isinstance(r, dict) else {'error': str(r)}
+
+        elif name == 'bsk_run':
+            cmd = (args.get('command') or '').strip()
+            if not cmd:
+                result = {'error': 'command required'}
+            else:
+                try:
+                    import shlex
+                    bsk = getattr(config, 'BSK_BIN', None) or 'bsk'
+                    p = subprocess.run([bsk] + shlex.split(cmd),
+                                       capture_output=True, text=True, encoding='utf-8',
+                                       errors='replace', timeout=int(args.get('timeout', 60)),
+                                       cwd=HERE)
+                    result = {'ok': p.returncode == 0, 'code': p.returncode,
+                              'stdout': (p.stdout or '')[-3000:], 'stderr': (p.stderr or '')[-1500:]}
+                except FileNotFoundError:
+                    result = {'error': 'bsk 未安装 (见 BrowserSkill/AGENT_INSTALL.md)', 'ok': False}
+                except subprocess.TimeoutExpired:
+                    result = {'error': 'bsk 命令超时', 'ok': False}
 
         elif name == 'list_drafts':
             r = _get_internal('api/drafts')
@@ -1394,10 +1464,20 @@ def api_chat():
 3. 引用语音内容时带时间戳；但时间戳/文案必须直接来自工具返回的 segments，禁止自己编造或推测
 4. 保持简洁，中文回复
 5. 制作视频的标准流程: create_draft → add_video(url, start, end) → [可选 add_text/add_audio/add_image] → save_draft → render
-6. 当用户要求"渲染/导出/出片/出视频"时，保存草稿后必须调用 render 工具提交渲染，不要只说"可以渲染了"；渲染中可用 render_status 查进度
+6. 当用户要求"渲染/导出/出片/出视频"时，保存草稿后必须调用 render 工具提交渲染，不要只说"可以渲染了"；提交后【默认自动监控】：立即用 render_status(wait=true) 查询，未完成就继续调用（每次服务端会等~25秒），直到 done/error，然后直接告知用户结果（done 报 mp4 文件名，error 报错误摘要），不要问"需要我帮你监控吗"，也不要中途汇报无意义的进度
 7. add_video 的 start/end 是源视频的截取起止秒数（如 start=0, end=10 取前10秒）；target_start 才是成片时间轴上的位置，不填会自动接在同名轨道末尾
 7b. "主视频"（贯穿全片的主体素材）始终放在 add_video 默认的 'video_main' 轨道，按顺序多次调用即可自动接龙；"补充素材/花絮/B-roll"（叠加在主视频某个时间点上方的片段）必须用不同的 track_name（如 'broll_1'）并显式指定 target_start=该素材要出现的成片秒数，同时给一个比主视频轨道更高的 relative_index（如 1），否则会被主视频盖住或跟主视频撞在同一条轨道上
 8. 用户想用模板快速做视频时，先 list_templates 看有哪些模板和需要填的变量，再 run_template
+9. 【发布视频到平台】用户说"发布/发到视频号/抖音/小红书"时，用 bsk_run 驱动浏览器完成（需用户已装 BrowserSkill 扩展并登录过平台）。流程：
+   a. bsk_run "session start --no-focus" 拿 4 位会话 id（记为 SID，后续所有命令都带 --session SID）
+   b. bsk_run "navigate <平台发布页> --session SID"。平台发布页：视频号 https://channels.weixin.qq.com/platform/post/create ；抖音 https://creator.douyin.com/creator-micro/content/upload ；小红书 https://creator.xiaohongshu.com/publish/publish
+   c. bsk_run "snapshot --session SID" 看页面结构拿 @eN 引用。若跳登录页 → bsk_run "request-help --session SID --prompt 请扫码/登录后点完成 --timeout 5m" 让用户处理
+   d. 注入视频文件（bsk 无文件上传命令，用 evaluate + DataTransfer）：先 snapshot 找到上传区的 <input type=file>（通常藏在"拖拽上传"区块内，snapshot 看不到就 get-html 找），然后 evaluate 执行：
+      (async()=>{{const r=await fetch('http://<本机IP>:9010/api/video/serve?path=<mp4绝对路径URL编码>');const b=await r.blob();const f=new File([b],'<文件名>.mp4',{{type:'video/mp4'}});const d=new DataTransfer();d.items.add(f);const i=document.querySelector('input[type=file]');i.files=d.files;i.dispatchEvent(new Event('change',{{bubbles:true}}));return 'ok'}})()
+      （本机IP用 192.168.8.133；mp4 路径取 render 任务结果里的 mp4_path）
+   e. 等页面解析完视频后再 snapshot，填标题/话题（fill），必要时 request-help 处理验证码
+   f. 点发布（click），snapshot 确认发布成功，最后必须 bsk_run "session stop SID"
+   g. 每步失败最多重试一次；连续失败就 request-help 或如实告知用户卡在哪一步
 9. 用户问"有哪些草稿/之前做的视频"时调用 list_drafts
 10. 任何工具调用返回 error 或结果为空时，必须原样告知用户失败原因，绝不能假装成功或编造一个看起来合理的分析结果顶替
 11. 按内容/主题找素材(如"找一个有山的视频")时，优先用 search_by_tags 关键词粗筛(SQLite 索引查询，不耗 token，毫秒级返回)，缩小候选范围后再对具体文件调用 get_resource_detail/get_transcript 看全文细节确认；标签查不到、或用户用整句话描述要找的内容时，改用 search_assets 全文检索(搜文件名/画面描述/口播文案/标签)兜底；素材没几个再退化成直接读全部资源详情
