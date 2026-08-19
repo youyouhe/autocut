@@ -210,6 +210,64 @@ def enqueue_render(task_id, draft_dir, draft_name):
 # 注意: 桌面池在服务启动时初始化 (见 __main__)
 
 
+def _find_draft_main_video(draft_dir):
+    """在草稿里找主视频文件路径: video 轨道上时长最大的 segment 的素材.
+    path 有效用 path, 否则按 remote_url 文件名去上传目录找 (同 inject_draft 的修复逻辑).
+    找不到返回 None."""
+    cp = os.path.join(draft_dir, 'draft_content.json')
+    if not os.path.isfile(cp):
+        return None
+    try:
+        c = json.load(open(cp, encoding='utf-8'))
+    except Exception:
+        return None
+    mats = {m.get('id'): m for m in (c.get('materials', {}).get('videos') or [])}
+    best_dur, best_path = 0, None
+    for tr in c.get('tracks') or []:
+        if tr.get('type') != 'video':
+            continue
+        for s in tr.get('segments') or []:
+            dur = (s.get('target_timerange') or {}).get('duration') or 0
+            m = mats.get(s.get('material_id'))
+            if not m:
+                continue
+            p = m.get('path')
+            if not (p and os.path.isfile(p)):
+                rp = (m.get('remote_url') or '').replace('\\', '/')
+                cand = os.path.join(UPLOAD_DIR, os.path.basename(rp)) if rp else ''
+                p = cand if (cand and os.path.isfile(cand)) else None
+            if p and dur > best_dur:
+                best_dur, best_path = dur, p
+    return best_path
+
+
+def _draft_cover_url(draft_dir, folder_name):
+    """草稿封面 URL: 优先 JianYing 自带的 draft_cover.jpg; 没有就从主视频 ffmpeg 截 1s 处一帧,
+    缓存到 CACHE_DIR/draft_covers/<folder>.jpg (CACHE_DIR 在 serve 白名单里, 按源视频 mtime 失效).
+    没有主视频返回 None —— 前端显示黑屏占位 (符合预期)."""
+    from urllib.parse import quote
+    cand = os.path.join(draft_dir, 'draft_cover.jpg')
+    if os.path.isfile(cand):
+        return '/api/video/serve?path=' + quote(cand.replace('\\', '/'))
+    src = _find_draft_main_video(draft_dir)
+    if not src:
+        return None
+    covers_dir = os.path.join(config.CACHE_DIR, 'draft_covers')
+    try:
+        os.makedirs(covers_dir, exist_ok=True)
+        jpg = os.path.join(covers_dir, folder_name + '.jpg')
+        src_mtime = os.path.getmtime(src)
+        if not (os.path.isfile(jpg) and os.path.getmtime(jpg) > src_mtime):
+            subprocess.run(['ffmpeg', '-y', '-v', 'error', '-ss', '1', '-i', src,
+                            '-frames:v', '1', '-vf', 'scale=480:-2', jpg],
+                           capture_output=True, timeout=20)
+        if os.path.isfile(jpg):
+            return '/api/video/serve?path=' + quote(jpg.replace('\\', '/'))
+    except Exception:
+        pass
+    return None
+
+
 def find_draft_dir(extract_dir):
     """在解压目录找含 draft_content.json 的文件夹"""
     for root, dirs, files in os.walk(extract_dir):
@@ -419,16 +477,8 @@ def api_list_drafts():
             m = json.load(open(root_meta, encoding='utf-8'))
             for d in m.get('all_draft_store', []):
                 fold = d.get('draft_fold_path', '')
-                cover = d.get('draft_cover', '')
-                # 封面路径转 URL
-                cover_url = None
-                if cover and os.path.exists(cover):
-                    cover_url = f'/api/video/serve?path={os.path.basename(cover)}&folder={os.path.basename(fold)}'
-                elif cover and not os.path.isabs(cover):
-                    # 相对路径 draft_cover.jpg
-                    abs_cover = os.path.join(fold, cover)
-                    if os.path.exists(abs_cover):
-                        cover_url = f'/api/cover?folder={os.path.basename(fold)}'
+                # 封面: 优先 JianYing 自带 draft_cover.jpg, 没有则从主视频截帧 (见 _draft_cover_url)
+                cover_url = _draft_cover_url(fold, os.path.basename(fold)) if os.path.isdir(fold) else None
 
                 drafts.append({
                     'id': d.get('draft_id', ''),
@@ -445,6 +495,34 @@ def api_list_drafts():
                 })
         except Exception as e:
             return jsonify({'error': str(e)}), 500
+
+    # 补充: 对话生成的草稿 (VectCutAPI 目录, 不在 root_meta 里) —— 不列出来用户在
+    # Drafts 面板就看不到自己刚生成的草稿, 也点不了 Render.
+    seen_folders = {d.get('folder') for d in drafts}
+    try:
+        for name in sorted(os.listdir(VC_DIR)):
+            if name.startswith('template') or name in seen_folders:
+                continue
+            dd = os.path.join(VC_DIR, name)
+            cp = os.path.join(dd, 'draft_content.json')
+            if not os.path.isfile(cp):
+                continue
+            try:
+                c = json.load(open(cp, encoding='utf-8'))
+            except Exception:
+                continue
+            mt = os.path.getmtime(cp)
+            drafts.append({
+                'id': name, 'name': name,
+                'duration': (c.get('duration') or 0) / 1e6,
+                'created': mt, 'modified': mt,
+                'folder': name, 'fold_path': dd,
+                'cover_url': _draft_cover_url(dd, name),
+                'type': 'chat',
+                'json_file': cp, 'size_bytes': 0,
+            })
+    except Exception:
+        pass
 
     # 按修改时间倒序
     drafts.sort(key=lambda x: x.get('modified', 0), reverse=True)
