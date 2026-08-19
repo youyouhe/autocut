@@ -71,7 +71,24 @@ def test_client_render_poll(monkeypatch):
 
 
 def test_client_render_wait_timeout(monkeypatch):
-    c, s = _make_client(monkeypatch, [{'status': 'rendering'}] * 200)
+    # FakeSession 持续返回 rendering —— 不再依赖有限队列长度. 旧实现给 200 条固定响应,
+    # 在快机器上 0.01s 内就能轮询完 200 条 (pop 见底先抛 IndexError, 跑在 timeout 判断
+    # 之前), 让这个"测超时"的用例反而因队列耗尽而失败. 改成无限 rendering 才真正测到
+    # timeout 分支.
+    from cli.client import ApiClient
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {'status': 'rendering'}
+
+    class FakeSession:
+        def get(self, url, **kw):
+            return FakeResp()
+
+    c = ApiClient(base_url='http://x:1')
+    c.session = FakeSession()
     with pytest.raises(Exception, match='timeout'):
         c.render_wait('t1', timeout=0.01, poll=0)
 

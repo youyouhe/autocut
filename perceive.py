@@ -21,6 +21,32 @@ QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3.7-plus")
 ASR_ENDPOINT = os.environ.get("ASR_ENDPOINT", "https://asr.smartbid.site/inference")
 ASR_API_KEY = os.environ.get("ASR_API_KEY", "")
 
+# 分析优先级: 默认优先用 ASR(听) 判断视频内容, 只有 ASR 不可用/转录为空时才回退到 VLM(看)
+# 省 VLM 调用的 token/时间 —— 大部分素材靠语音已经能判断内容, 画面分析留作补充手段.
+PREFER_ASR = os.environ.get("PREFER_ASR", "1") == "1"
+
+# Whisper 系模型在喂入静音/纯噪音/无法识别的音频时会"幻觉"出一些从训练数据里背下来的
+# 固定短句, 而不是老实返回空文本 —— 最典型的就是这句俄语字幕组水印。这类音频通常被
+# webrtcvad 误判成"有语音"(风声/引擎声/环境噪音的能量包络和人声接近), 导致明明没有
+# 真实人声内容也被送去 ASR, 转出这类幻觉句子。命中黑名单就当 ASR 结果不可用, 回退 VLM。
+ASR_HALLUCINATION_PATTERNS = [
+    "субтитры создавал",       # "Субтитры создавал DimaTorzok" 及变体
+    "субтитры делал",
+    "amara.org",
+    "subtitles by the amara.org community",
+    "www.zeoob.com",
+]
+
+
+def _looks_like_asr_hallucination(audio_result):
+    """粗略识别 Whisper 类模型在无真实语音时吐出的固定幻觉句子。"""
+    if not isinstance(audio_result, dict):
+        return False
+    text = (audio_result.get('full_text') or '').strip().lower()
+    if not text:
+        return False
+    return any(p in text for p in ASR_HALLUCINATION_PATTERNS)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config
@@ -49,6 +75,84 @@ def ffprobe_meta(video_path):
         'height': int(stream.get('height', 0) or 0),
         'fps': stream.get('r_frame_rate', '30/1'),
     }
+
+
+def has_audio_stream(video_path):
+    """ffprobe 查是否存在音频轨 (读容器元数据, 不解码, 通常 <200ms, 零网络请求)."""
+    cmd = ['ffprobe', '-v', 'error', '-select_streams', 'a',
+           '-show_entries', 'stream=index', '-of', 'csv=p=0', video_path]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, errors='replace')
+        return bool(r.stdout.strip())
+    except Exception:
+        return True  # 探测失败保守处理: 当作"可能有音频", 交给后面 ASR 结果兜底判断
+
+
+def audio_likely_has_speech(video_path, duration):
+    """判断音轨是否可能含人声, 用来在真正调远程 ASR 之前先排除"没有语言"的视频 ——
+    那类视频走一遍 ASR 纯属浪费一次网络往返(上传音频+等转录), 结果注定是空的。
+    没有音频轨直接判 False。优先用 webrtcvad 做真正的语音活动检测(能区分人声和环境音/
+    音乐, 单纯按分贝判静音区分不了这个); webrtcvad 不可用时退化成静音检测(能拦掉无
+    音轨/彻底静音的视频, 但环境音/BGM 会被误判成"可能有语音", 走一次 ASR 兜底)。
+    任何检测失败都保守判 True, 照旧走 ASR, 避免误杀真的有语音的内容。"""
+    if not has_audio_stream(video_path):
+        return False
+    if not duration or duration <= 0:
+        return True
+    try:
+        return _vad_has_speech(video_path)
+    except ImportError:
+        return _silence_detect_has_speech(video_path, duration)
+    except Exception:
+        # VAD 跑到一半炸了(ffmpeg 抽取 PCM 失败等) —— 别让检测本身的问题拖垮整个分析,
+        # 退回静音检测再试一次; 静音检测也失败的话它自己会保守返回 True.
+        return _silence_detect_has_speech(video_path, duration)
+
+
+def _vad_has_speech(video_path, sample_rate=16000, frame_ms=30, speech_ratio_threshold=0.4):
+    """webrtcvad: 按 30ms 帧扫描音轨, >= threshold 比例的帧被判定为人声才算有语音.
+    实测: mode=3(最挑剔) 下纯环境音(水声/夜间市声)视频约 14% 帧被误判成人声, 真人说话
+    的视频约 98%; 阈值设 40%, 留足余量避免把间歇性说话的视频误杀, 同时能拦掉环境音。"""
+    import webrtcvad
+    cmd = ['ffmpeg', '-v', 'error', '-i', video_path, '-vn',
+           '-ac', '1', '-ar', str(sample_rate), '-f', 's16le', '-']
+    r = subprocess.run(cmd, capture_output=True, timeout=60)
+    pcm = r.stdout
+    if not pcm:
+        return True
+    vad = webrtcvad.Vad(3)  # 0-3, 3=对"是否人声"最挑剔, 最不容易把噪音/音乐误判成人声
+    frame_bytes = int(sample_rate * frame_ms / 1000) * 2  # 16-bit PCM = 2 bytes/sample
+    total = speech = 0
+    for i in range(0, len(pcm) - frame_bytes + 1, frame_bytes):
+        total += 1
+        try:
+            if vad.is_speech(pcm[i:i + frame_bytes], sample_rate):
+                speech += 1
+        except Exception:
+            continue
+    if total == 0:
+        return True
+    return (speech / total) >= speech_ratio_threshold
+
+
+def _silence_detect_has_speech(video_path, duration):
+    """兜底方案 (webrtcvad 不可用时): ffmpeg silencedetect 按分贝判静音, 只能拦掉
+    无音轨/彻底静音, 分不清"有环境音但没人声"和"真的有人说话"。"""
+    cmd = ['ffmpeg', '-i', video_path, '-vn', '-af', 'silencedetect=noise=-35dB:d=0.3',
+           '-f', 'null', '-']
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, errors='replace')
+    except Exception:
+        return True
+    silence_total = 0.0
+    for line in (r.stderr or '').split('\n'):
+        if 'silence_duration:' in line:
+            try:
+                silence_total += float(line.split('silence_duration:')[1].strip().split()[0])
+            except (ValueError, IndexError):
+                pass
+    return (silence_total / duration) < 0.95
+
 
 
 def extract_frames(video_path, count=5, max_width=640):
@@ -301,22 +405,60 @@ def _parse_asr_response(raw):
     return {'segments': segments, 'full_text': full_text}
 
 
+def _extract_json_field(text, field):
+    """从 VLM 返回的 markdown/JSON 混排文本里挖出某个字段, 拿不到就返回 None.
+    tags 检索要走这个而不是重新调 VLM, 所以字段名和 vlm_prompt 里要的 JSON key 要对齐。"""
+    import re as _re
+    if not text:
+        return None
+    try:
+        m = _re.search(r'\{[\s\S]*\}', text)
+        if not m:
+            return None
+        return json.loads(m.group()).get(field)
+    except Exception:
+        return None
+
+
 # ============================================================ 核心 API
 
 def perceive_video(video_path, do_asr=True, frame_count=5):
-    """让 agent "看懂"一个视频: 画面 + 语音 + 场景 + 元数据"""
+    """让 agent "看懂"一个视频: 画面 + 语音 + 场景 + 元数据.
+
+    分析优先级 (PREFER_ASR, 默认开, Settings 页可关): 先跑 ASR, 转录成功且有实际
+    文字内容 → 直接用, 不再花 VLM token 去"看"画面; ASR 未配置/转录失败/静音视频
+    (无文字) 时才回退到 VLM 抽帧分析。PREFER_ASR=0 时维持旧行为: VLM+ASR 都跑。"""
     result = {}
 
     # ① 元数据
     result['meta'] = ffprobe_meta(video_path)
+    result['tags'] = []  # 只有跑了 VLM 才会有值; ASR 模式没有画面标签, 检索时退化到全文转录
 
     # ② 场景检测
     result['scenes'] = detect_scenes_ffmpeg(video_path)
 
-    # ③ 抽帧 + VLM 画面分析
-    frames, _ = extract_frames(video_path, count=frame_count)
-    if frames:
-        vlm_prompt = f"""你是一个专业的视频分析师。以下是从一个视频（时长{result['meta']['duration']:.1f}秒，{result['meta']['width']}x{result['meta']['height']}）中抽取的{len(frames)}个关键帧。
+    # ③ ASR 音频转录 (若开启优先级, 提前到 VLM 之前跑, 用来判断是否还需要 VLM)
+    # 先本地静音检测排除"没有语言"的视频, 省一次远程 ASR 往返(注定是空转录)
+    audio_result = None
+    if do_asr:
+        if audio_likely_has_speech(video_path, result['meta'].get('duration', 0)):
+            audio_result = asr_transcribe(video_path)
+        else:
+            audio_result = {'full_text': '', 'segments': [], 'skipped': 'no_speech_detected'}
+    asr_usable = bool(
+        do_asr and isinstance(audio_result, dict)
+        and not audio_result.get('error') and audio_result.get('full_text', '').strip()
+    )
+    if asr_usable and _looks_like_asr_hallucination(audio_result):
+        audio_result['hallucination_filtered'] = True
+        asr_usable = False
+
+    # ④ VLM 画面分析: PREFER_ASR 且 ASR 已经给出可用文字内容时跳过, 否则(包括 PREFER_ASR=0)照跑
+    need_vlm = not (PREFER_ASR and asr_usable)
+    if need_vlm:
+        frames, _ = extract_frames(video_path, count=frame_count)
+        if frames:
+            vlm_prompt = f"""你是一个专业的视频分析师。以下是从一个视频（时长{result['meta']['duration']:.1f}秒，{result['meta']['width']}x{result['meta']['height']}）中抽取的{len(frames)}个关键帧。
 检测到{len(result['scenes'])}个场景切换。
 
 请分析并返回 JSON:
@@ -326,22 +468,66 @@ def perceive_video(video_path, do_asr=True, frame_count=5):
   "quality": "画面质量评估(1-10分) + 简短理由",
   "highlights": ["最精彩的时间区间描述, 如'3-7秒的海浪特写'"],
   "suitable_for": ["适合的用途, 如:产品展示/背景素材/教程/情感"],
-  "text_in_frame": "画面中是否有文字/字幕/水印, 如有则提取"
+  "text_in_frame": "画面中是否有文字/字幕/水印, 如有则提取",
+  "tags": ["5-8个描述画面主体/场景/物体的短关键词, 如'山间','水塘','凉亭','高压线','自然风景'"]
 }}"""
-        vlm_result = vlm_analyze(frames, vlm_prompt)
-        result['visual_analysis'] = vlm_result['text']
-        result['vlm_tokens'] = {
-            'input': vlm_result['input_tokens'],
-            'output': vlm_result['output_tokens']
-        }
+            vlm_result = vlm_analyze(frames, vlm_prompt)
+            result['visual_analysis'] = vlm_result['text']
+            result['tags'] = _extract_json_field(vlm_result['text'], 'tags') or []
+            result['vlm_tokens'] = {
+                'input': vlm_result['input_tokens'],
+                'output': vlm_result['output_tokens']
+            }
 
-    # ④ ASR 音频转录
+    result['analysis_mode'] = 'asr' if (PREFER_ASR and asr_usable) else ('vlm' if need_vlm else 'none')
+
+    # ⑤ 挂载 ASR 结果
     if do_asr:
-        result['audio'] = asr_transcribe(video_path)
-        if isinstance(result['audio'], dict) and result['audio'].get('segments'):
-            result['srt'] = _segments_to_srt(result['audio']['segments'])
+        result['audio'] = audio_result
+        # 幻觉句子已判定不可用, 别把它当正经字幕/文案挂出去误导前端和下游剪辑逻辑
+        if isinstance(audio_result, dict) and audio_result.get('hallucination_filtered'):
+            audio_result['raw_full_text'] = audio_result.get('full_text', '')
+            audio_result['full_text'] = ''
+            audio_result['segments'] = []
+        if isinstance(audio_result, dict) and audio_result.get('segments'):
+            result['srt'] = _segments_to_srt(audio_result['segments'])
 
     return result
+
+
+def perceive_image(image_path, max_width=1024):
+    """让 agent "看懂"一张图片: 没有时长/场景/语音这些视频概念, 直接把整张图扔给 VLM 描述.
+    发之前用 ffmpeg 缩到 max_width 等比缩放 —— 原图动辄几千像素几MB, 不缩的话
+    传给 VLM 的 base64 payload 又大又贵, 分析质量跟这点分辨率也没关系。"""
+    meta = ffprobe_meta(image_path)
+    with tempfile.TemporaryDirectory() as tmp:
+        resized = os.path.join(tmp, 'resized.jpg')
+        cmd = ['ffmpeg', '-y', '-i', image_path,
+               '-vf', f"scale='min({max_width},iw)':-1", '-q:v', '3', resized]
+        subprocess.run(cmd, capture_output=True, timeout=30)
+        src = resized if os.path.exists(resized) else image_path
+        with open(src, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode()
+
+    prompt = f"""你是一个专业的图片分析师。以下是一张图片（原始尺寸 {meta['width']}x{meta['height']}）。
+请分析并返回 JSON:
+{{
+  "content": "图片主要内容描述",
+  "mood": "情绪氛围/风格(如:明快/复古/商务/温馨)",
+  "quality": "画质评估(1-10分) + 简短理由",
+  "suitable_for": ["适合的用途, 如:视频封面/背景素材/插图/产品图"],
+  "text_in_image": "图片中是否有文字/水印, 如有则提取",
+  "tags": ["5-8个描述图片主体/场景/物体的短关键词, 如'山间','水塘','凉亭','高压线','自然风景'"]
+}}"""
+    vlm_result = vlm_analyze([{'time': 0, 'b64': b64}], prompt)
+    return {
+        'meta': {'width': meta['width'], 'height': meta['height']},
+        'visual_analysis': vlm_result['text'],
+        'tags': _extract_json_field(vlm_result['text'], 'tags') or [],
+        'vlm_tokens': {'input': vlm_result['input_tokens'], 'output': vlm_result['output_tokens']},
+        'analysis_mode': 'vlm',
+    }
+
 
 
 def perceive_result(mp4_path, expectations=None):

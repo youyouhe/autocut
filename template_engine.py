@@ -144,15 +144,16 @@ def _scene_text(scene, ctx):
 
 
 def _scene_image(scene, ctx):
-    """处理图片场景（作为背景层或叠加层）"""
+    """处理图片场景（作为背景层或叠加层）. add_image 接口的 start/end 直接是时间轴位置
+    (图片没有"源片段", 不像视频要分 source_start/target_start)."""
+    start = _parse_time(scene.get('target_start', ctx['cursor']))
+    dur = _parse_time(scene.get('duration', 5))
     data = {
         'draft_id': ctx['draft_id'],
-        'video_url': scene.get('source', scene.get('url', '')),
-        'start': _parse_time(scene.get('source_start', 0)),
-        'target_start': _parse_time(scene.get('target_start', ctx['cursor'])),
+        'image_url': scene.get('source', scene.get('url', '')),
+        'start': start,
+        'end': start + dur,
     }
-    dur = _parse_time(scene.get('duration', 5))
-    data['end'] = data['start'] + dur
     # 图片特有
     if scene.get('intro_animation'): data['intro_animation'] = scene['intro_animation']
     if scene.get('outro_animation'): data['outro_animation'] = scene['outro_animation']
@@ -166,7 +167,7 @@ def _scene_image(scene, ctx):
     # 叠加层不推进 cursor
     if scene.get('overlay'):
         return result
-    ctx['cursor'] = data['target_start'] + dur
+    ctx['cursor'] = start + dur
     return result
 
 
@@ -289,6 +290,25 @@ def render_template(template_path, variables=None, do_render=False, draft_folder
     return result
 
 
+import re
+
+_VAR_RE = re.compile(r'\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}')
+
+
+def _extract_variables(tpl, raw_text):
+    """变量名来源: 优先用顶层 variables: 字典声明; 若未声明, 从原始 YAML 文本里
+    正则提取所有 {{xxx}} 占位符 (按首次出现顺序去重) — 现有 3 个模板均未声明
+    variables:, 只在 scenes 里散落使用占位符, 否则前端拿不到字段渲染表单."""
+    declared = tpl.get('variables')
+    if isinstance(declared, dict) and declared:
+        return list(declared.keys())
+    seen = []
+    for name in _VAR_RE.findall(raw_text):
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
 def list_templates():
     """列出所有可用模板"""
     templates = []
@@ -299,12 +319,13 @@ def list_templates():
             path = os.path.join(TEMPLATES_DIR, f)
             try:
                 with open(path, encoding='utf-8') as fh:
-                    tpl = yaml.safe_load(fh)
+                    raw_text = fh.read()
+                tpl = yaml.safe_load(raw_text)
                 templates.append({
                     'file': f,
                     'name': tpl.get('name', f),
                     'description': tpl.get('description', ''),
-                    'variables': list(tpl.get('variables', {}).keys()) if isinstance(tpl.get('variables'), dict) else [],
+                    'variables': _extract_variables(tpl, raw_text),
                 })
             except Exception:
                 pass

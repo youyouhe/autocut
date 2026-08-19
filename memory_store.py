@@ -1,9 +1,10 @@
 # memory_store.py — 运行时内存缓存
-# 1. analysis_cache/*.json → 启动时全量载入内存 (毫秒级查询)
+# 1. 素材分析结果 → asset_store.py 落 SQLite (长期管理 + SQL 检索)
 # 2. ≤50MB 的视频文件 → 按需载入内存 (前端预览/分析零磁盘 IO)
 import os, json, hashlib, time, threading
 
 import config
+import asset_store
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = config.CACHE_DIR
@@ -13,7 +14,6 @@ MAX_VIDEO_RAM = 50 * 1024 * 1024   # 50MB 以下载入内存
 MAX_TOTAL_RAM = 500 * 1024 * 1024 # 总视频内存上限 500MB
 
 _lock = threading.Lock()
-_analysis_store = {}      # {path_hash: {result dict}}  — 分析元数据
 _video_store = {}         # {path: {bytes, name, size, time}} — 视频字节
 _video_ram_used = 0       # 当前视频内存用量
 
@@ -22,65 +22,49 @@ def _path_hash(path):
     return hashlib.md5(path.encode('utf-8')).hexdigest()
 
 
-# ============================================================ 分析元数据
+# ============================================================ 分析元数据 (SQLite)
 
 def load_all_analysis():
-    """启动时全量载入 analysis_cache/ 到内存"""
-    global _analysis_store
-    count = 0
-    if not os.path.isdir(CACHE_DIR):
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        return 0
-    for f in os.listdir(CACHE_DIR):
-        if not f.endswith('.json'):
-            continue
-        try:
-            with open(os.path.join(CACHE_DIR, f), encoding='utf-8') as fh:
-                data = json.load(fh)
-            key = f.replace('.json', '')
-            _analysis_store[key] = data
-            count += 1
-        except Exception:
-            pass
-    return count
+    """启动时返回已入库的分析记录数 (数据在 SQLite, 无需全量载内存)。"""
+    return asset_store.count()
 
 
 def get_analysis(path):
-    """内存查询分析结果 (O(1) dict lookup)"""
-    return _analysis_store.get(_path_hash(path))
+    """按路径查分析结果 (SQLite 主键查询)。"""
+    return asset_store.get(path)
 
 
 def has_analysis(path):
-    return _path_hash(path) in _analysis_store
+    return asset_store.has(path)
 
 
 def save_analysis(path, result):
-    """写入内存 + 落盘"""
-    h = _path_hash(path)
-    result = dict(result)
-    result['_path'] = path
-    result['_time'] = time.time()
+    """写入 SQLite (asset_store.upsert)。"""
+    asset_store.upsert(path, result)
+
+
+def invalidate_analysis(path):
+    """文件内容变了 (如去除音轨) 时清掉旧分析记录, 否则库里的老结果
+    (可能包含已经不存在的音轨对应的 ASR 转录) 会被继续当作最新结果返回。"""
+    global _video_ram_used
+    asset_store.delete(path)
     with _lock:
-        _analysis_store[h] = result
-    try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        with open(os.path.join(CACHE_DIR, f'{h}.json'), 'w', encoding='utf-8') as fh:
-            json.dump(result, fh, ensure_ascii=False)
-    except Exception:
-        pass
+        old = _video_store.pop(path, None)
+        if old:
+            _video_ram_used -= old['size']
 
 
 def list_all_analysis():
-    """返回所有已缓存的元数据摘要"""
+    """返回所有已入库的分析元数据摘要 (兼容旧字段)。"""
     out = []
-    for h, data in _analysis_store.items():
+    for a in asset_store.list_all():
         out.append({
-            'hash': h,
-            'path': data.get('_path', ''),
-            'time': data.get('_time', 0),
-            'has_visual': bool(data.get('visual_analysis')),
-            'has_audio': bool(data.get('audio', {}).get('full_text')),
-            'duration': data.get('meta', {}).get('duration', 0),
+            'hash': _path_hash(a['path']),
+            'path': a['path'],
+            'time': a.get('time', 0),
+            'has_visual': a.get('has_visual', False),
+            'has_audio': a.get('has_audio', False),
+            'duration': a.get('duration', 0),
         })
     return out
 
@@ -172,6 +156,6 @@ def video_cache_stats():
 
 # ============================================================ 启动
 
-# 模块加载时自动载入分析缓存
+# 模块加载时报告已入库分析记录数
 _count = load_all_analysis()
-print(f'[memory_store] 载入 {_count} 条分析缓存', flush=True)
+print(f'[memory_store] SQLite 已入库 {_count} 条分析记录', flush=True)

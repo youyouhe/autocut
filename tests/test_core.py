@@ -129,14 +129,17 @@ def test_localsend_dedup_path(tmp_path):
 
 def test_memory_store_analysis_roundtrip(tmp_path, monkeypatch):
     import memory_store as ms
-    monkeypatch.setattr(ms, 'CACHE_DIR', str(tmp_path))
-    ms.save_analysis('/tmp/x.mp4', {'meta': {'duration': 5}})
+    import asset_store
+    monkeypatch.setattr(asset_store, 'DB_PATH', str(tmp_path / 'assets.db'))
+    asset_store.init()
+    ms.save_analysis('/tmp/x.mp4', {'meta': {'duration': 5}, 'tags': ['a', 'b']})
     assert ms.has_analysis('/tmp/x.mp4')
     got = ms.get_analysis('/tmp/x.mp4')
     assert got['meta']['duration'] == 5
     assert got['_path'] == '/tmp/x.mp4'
-    # 落盘文件存在
-    assert any(f.endswith('.json') for f in os.listdir(tmp_path))
+    # SQLite 落库, 可按标签检索
+    hits = asset_store.search_tags(['a'])
+    assert hits and hits[0]['name'] == 'x.mp4'
 
 
 def test_memory_store_video_cache(tmp_path, monkeypatch):

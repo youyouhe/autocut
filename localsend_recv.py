@@ -8,6 +8,12 @@
 import os, sys, json, uuid, socket, struct, threading, time, logging
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
+# Windows 控制台默认 GBK, logging 走 stderr 会把中文写成乱码 (重定向到文件/管道时尤其明显)
+try: sys.stdout.reconfigure(encoding='utf-8')
+except Exception: pass
+try: sys.stderr.reconfigure(encoding='utf-8')
+except Exception: pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAVE_DIR = os.path.join(HERE, 'render_uploads')
 os.makedirs(SAVE_DIR, exist_ok=True)

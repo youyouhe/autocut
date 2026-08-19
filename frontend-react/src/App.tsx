@@ -4,11 +4,13 @@
  * sidebar 4 tab + LocalSend; 共享状态 (assets / draftId) 提升到此, props 下发各面板.
  */
 import { useState, useEffect, useCallback } from 'react';
-import { Video, MessageSquare, FileEdit, MonitorPlay, Radio } from 'lucide-react';
+import { Video, MessageSquare, FileEdit, MonitorPlay, Radio, LayoutTemplate, Settings } from 'lucide-react';
 import AssetPanel from './components/AssetPanel';
 import ChatPanel from './components/ChatPanel';
 import DraftPanel from './components/DraftPanel';
 import RenderPanel from './components/RenderPanel';
+import TemplatesPanel from './components/TemplatesPanel';
+import SettingsPanel from './components/SettingsPanel';
 import ReceiveDialog from './components/ReceiveDialog';
 import * as api from './api';
 import type { Asset } from './api';
@@ -20,6 +22,7 @@ export default function App() {
   // 共享状态
   const [assets, setAssets] = useState<Asset[]>([]);
   const [draftId, setDraftId] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const [online, setOnline] = useState(true);
 
   const refreshAssets = useCallback(async () => {
@@ -68,8 +71,10 @@ export default function App() {
   const tabs = [
     { id: 'assets', label: 'Assets', icon: Video },
     { id: 'chat', label: 'Chat', icon: MessageSquare },
+    { id: 'templates', label: 'Templates', icon: LayoutTemplate },
     { id: 'drafts', label: 'Drafts', icon: FileEdit },
     { id: 'render', label: 'Tasks', icon: MonitorPlay },
+    { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
   return (
@@ -126,9 +131,11 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 overflow-hidden relative">
         {activeTab === 'assets' && <AssetPanel assets={assets} setAssets={setAssets} refreshAssets={refreshAssetsWithCache} />}
-        {activeTab === 'chat' && <ChatPanel assets={assets} draftId={draftId} setDraftId={setDraftId} refreshAssets={refreshAssets} />}
-        {activeTab === 'drafts' && <DraftPanel onRendered={() => setActiveTab('render')} setDraftId={setDraftId} />}
+        {activeTab === 'chat' && <ChatPanel assets={assets} draftId={draftId} setDraftId={setDraftId} conversationId={conversationId} setConversationId={setConversationId} refreshAssets={refreshAssets} />}
+        {activeTab === 'templates' && <TemplatesPanel setDraftId={setDraftId} onGenerated={() => setActiveTab('drafts')} />}
+        {activeTab === 'drafts' && <DraftPanel onRendered={() => setActiveTab('render')} onCreated={() => setActiveTab('chat')} setDraftId={setDraftId} />}
         {activeTab === 'render' && <RenderPanel />}
+        {activeTab === 'settings' && <SettingsPanel />}
       </main>
 
       {isReceiveOpen && (

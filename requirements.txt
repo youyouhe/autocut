@@ -12,3 +12,13 @@ imageio>=2.30.0
 oss2>=2.18.0
 json5>=0.9.14
 mcp>=1.0.0
+webrtcvad-wheels>=2.0.14   # 本地语音活动检测, ASR 前先判断音轨是否真的有人声 (省无谓的远程 ASR 调用)
+                           # 用 -wheels 这个维护中的分支, 原始 webrtcvad 包依赖已废弃的 pkg_resources
+# 分镜拆分(镜头边界检测): GPU 跑预训练 CNN 提特征, 相邻帧特征距离跳变判定切镜。
+# torch/torchvision 装带 CUDA 的版本(本机 GTX 1070 Ti=Pascal sm_61, torch 2.7.x cu126 仍支持):
+#   国内直连 download.pytorch.org 慢且易下载损坏, 用阿里云镜像快 ~10x:
+#   pip install torch==2.7.1+cu126 torchvision==0.22.1+cu126 --index-url https://mirrors.aliyun.com/pytorch-wheels/cu126/
+#   (官方源: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126)
+# (没 GPU 的机器装 CPU 版一样能跑, 只是慢; 权重首次调用自动从 torchvision 官方 CDN 下 ~45MB, 不用手动找模型文件)
+torch>=2.0.0
+torchvision>=0.15.0

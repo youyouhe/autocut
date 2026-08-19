@@ -2,6 +2,7 @@
 # 供 CLI / MCP / template_engine / agent_demo 复用, 消除各处手写 requests 的重复.
 import os
 import time
+from urllib.parse import quote
 
 import requests
 
@@ -94,7 +95,7 @@ class ApiClient:
         return self.get('api/drafts')
 
     def delete_draft(self, folder):
-        r = self.session.delete(self._url(f'api/drafts/{folder}'), timeout=self.get_timeout)
+        r = self.session.delete(self._url(f'api/drafts/{quote(folder)}'), timeout=self.get_timeout)
         return self._parse(r)
 
     # ---------- 渲染 ----------
@@ -130,7 +131,8 @@ class ApiClient:
                 return st
             if time.time() - start > timeout:
                 raise ApiError(f'render timeout ({timeout}s)', payload=st)
-            time.sleep(poll)
+            if poll > 0:
+                time.sleep(poll)
 
     def render_download(self, task_id, dest):
         """下载渲染结果 mp4 到 dest. 返回保存路径."""
@@ -175,6 +177,67 @@ class ApiClient:
 
     def localsend_status(self):
         return self.get('api/localsend/status')
+
+    # ---------- 素材 ----------
+
+    def list_assets(self):
+        return self.get('api/assets')
+
+    def upload_assets(self, paths):
+        """multipart 上传一个或多个本地文件到 render_uploads/."""
+        files = [('files', open(p, 'rb')) for p in paths]
+        try:
+            r = self.session.post(self._url('api/upload'), files=files, timeout=self.post_timeout)
+            return self._parse(r)
+        finally:
+            for _, f in files:
+                f.close()
+
+    def delete_asset(self, name):
+        r = self.session.delete(self._url(f'api/assets/{quote(name)}'), timeout=self.get_timeout)
+        return self._parse(r)
+
+    def strip_audio(self, name):
+        """去除视频音轨, 之后分析只走 VLM(画面), 不再走 VAD/ASR."""
+        r = self.session.post(self._url(f'api/assets/{quote(name)}/strip-audio'), timeout=self.post_timeout)
+        return self._parse(r)
+
+    def get_shots(self, name):
+        """只读分镜拆分缓存, 没拆过 shots 字段是 null."""
+        return self.get(f'api/assets/{quote(name)}/shots')
+
+    def split_shots(self, name, force=False, sample_fps=5, min_scene_len_sec=0.6):
+        """分镜拆分: GPU CNN 特征检测镜头边界, 按边界切出每个镜头的独立小视频+关键帧."""
+        r = self.session.post(
+            self._url(f'api/assets/{quote(name)}/split-shots'),
+            json={'force': force, 'sample_fps': sample_fps, 'min_scene_len_sec': min_scene_len_sec},
+            timeout=self.post_timeout
+        )
+        return self._parse(r)
+
+    def get_main_video(self):
+        """当前"主视频"(最新录制的那条, 跟长期存在的素材库分开管理)。"""
+        return self.get('api/main-video')
+
+    def set_main_video(self, name):
+        """把某个视频素材标记为当前主视频; 旧的主视频自动变回普通素材库的一条."""
+        r = self.session.post(self._url(f'api/assets/{quote(name)}/set-main'), timeout=self.post_timeout)
+        return self._parse(r)
+
+    def clear_main_video(self):
+        r = self.session.post(self._url('api/main-video/clear'), timeout=self.post_timeout)
+        return self._parse(r)
+
+    # ---------- 设置 ----------
+
+    def get_settings(self):
+        return self.get('api/settings')
+
+    def save_settings(self, values):
+        return self.post('api/settings', json=values)
+
+    def test_setting(self, target, overrides=None):
+        return self.post('api/settings/test', json={'target': target, **(overrides or {})})
 
 
 # 模块级单例 (供内部模块复用; CLI 可自行实例化以指定 base_url)
