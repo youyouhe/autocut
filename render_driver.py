@@ -137,13 +137,18 @@ def inject_draft(src_draft_dir, new_name=None):
                 dur_us = _probe_dur_us(m['path'])
                 if dur_us <= 0:
                     continue
-                # 按成片时间线截断: 主视频不该超出字幕/其他轨道定义的结尾 (探到的源常比成片长)
-                if 0 < timeline_us < dur_us:
-                    dur_us = timeline_us
+                # 零时长段的本意就是"取素材全长"(add_video 没传 start/end). 之前按成片时间线截断,
+                # 但生成器拿不到时长时连时间线都是假的(如 27.7s 而视频 39.7s), 截断等于把尾部
+                # 12 秒语音切掉 —— 改成: 用完整探测时长, 且时间线跟着延长到段尾, 根治"切尾".
+                # 显式传过 start/end 的段 duration>0, 不会走到这里, 不受影响.
                 if (m.get('duration') or 0) <= 0:
                     m['duration'] = dur_us
                 seg['source_timerange'] = {'start': st.get('start') or 0, 'duration': dur_us}
                 seg['target_timerange'] = {'start': tt.get('start') or 0, 'duration': dur_us}
+                # 时间线跟着延长到段尾 (时间线是假的短了会切尾)
+                seg_end = (tt.get('start') or 0) + dur_us
+                if (c.get('duration') or 0) < seg_end:
+                    c['duration'] = seg_end
                 log('修复零时长视频段: %s -> %.1fs' % (m.get('material_name'), dur_us / 1000000))
         json.dump(c, open(cp, 'w', encoding='utf-8'), ensure_ascii=False)
     log('注入草稿: %s -> %s (id=%s)' % (src_name, new_name, new_id))
