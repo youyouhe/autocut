@@ -24,24 +24,45 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loadingConv, setLoadingConv] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // 内层内容盒: ResizeObserver 的观察对象. 容器自身尺寸不变(它是视口), 内容盒的高度
+  // 才随消息/媒体增长 —— 视频预览晚拿到 metadata、markdown/代码块晚排版、新消息插入,
+  // 全都会撑高内容盒, RO 都能捕获, 这是"状态驱动的 effect"覆盖不了的异步布局增长.
+  const contentRef = useRef<HTMLDivElement>(null);
   // 用户是否"贴着底部" (距底 <80px). 流式输出时若用户主动上翻看历史, 不强制拉回底部,
   // 只有本来就贴底(或刚发新消息)才自动跟随 —— 标准聊天面板行为.
   const stickToBottom = useRef(true);
   const lastScrollTop = useRef(0);
   const didInit = useRef(false);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = (smooth = false) => {
     const el = scrollRef.current;
     if (!el) return;
     // 直接滚消息容器本身. 不用 scrollIntoView: 它默认 block:'start' 会把"底部标记"顶端
     // 对齐到视口顶(等于把最新一条滚出视野), 且会连带滚动所有可滚的祖先容器.
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    // 默认 instant: 流式补滚要立刻到位, smooth 动画到的是发起时的旧目标, 内容一长高
+    // 就落在半路 (86K px 长页面 + smooth 尤其明显, 感知上"根本没滚").
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
   };
+  // 内容盒长高就补滚(贴底状态下). 治"晚熟布局": 挂载时 scrollTo 用的是当时高度,
+  // 之后的视频meta加载/排版落定把内容撑高了 1728px, 没有 RO 就永远卡在离底一截.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+    let lastH = content.offsetHeight;
+    const ro = new ResizeObserver(() => {
+      const h = content.offsetHeight;
+      const grew = h > lastH + 1;
+      lastH = h;
+      if (grew && stickToBottom.current) scrollToBottom(false);
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, []);
   const handleScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     // 方向感知: 只有"scrollTop 明显变小"(用户真实上翻)才取消跟随.
-    // 不能只看距底距离 —— smooth 自动滚动动画进行中触发的事件距离底部 >80px,
+    // 不能只看距底距离 —— 自动滚动动画进行中触发的事件距离底部 >80px,
     // 若据此取消贴底标记, 流式输出后续内容就永远不再跟随了 (上一版的竞态 bug).
     const goingUp = el.scrollTop < lastScrollTop.current - 4;
     lastScrollTop.current = el.scrollTop;
@@ -53,10 +74,11 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
   };
   // 依赖"条数 + 最后一条内容长度 + typing 状态": 覆盖 新消息追加 / 流式文本增长 /
   // tool 卡片插入 / 加载指示出现消失. 只依赖数组身份会漏掉原地改内容的场景.
+  // (异步布局增长由上面的 ResizeObserver 兜底, 这里的 effect 管状态变化触发的即时滚动)
   const lastMsg = messages[messages.length - 1];
   const lastLen = lastMsg ? lastMsg.content.length : 0;
   useEffect(() => {
-    if (stickToBottom.current) scrollToBottom();
+    if (stickToBottom.current) scrollToBottom(false);
   }, [messages.length, lastLen, isTyping, loadingConv]);
 
   const fetchConversations = async () => {
@@ -239,7 +261,8 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
           </div>
         </div>
 
-        <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-8 space-y-8">
+        <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-8">
+          <div ref={contentRef} className="space-y-8">
           {loadingConv ? (
             <div className="flex justify-center p-12"><Loader2 className="animate-spin text-[#121212]" size={28} /></div>
           ) : (
@@ -295,6 +318,7 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
               </div>
             </div>
           )}
+          </div>
         </div>
 
         <div className="p-8 border-t border-[#121212]/10 bg-transparent">
