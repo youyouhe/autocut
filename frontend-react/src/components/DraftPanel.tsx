@@ -1,17 +1,19 @@
 import { useState, useEffect } from 'react';
-import { Clock, Calendar, Trash2, Video, RefreshCw, Loader2 } from 'lucide-react';
+import { Clock, Calendar, Trash2, Video, RefreshCw, Loader2, Plus } from 'lucide-react';
 import * as api from '../api';
 import type { Draft } from '../api';
 
 interface Props {
   onRendered: () => void;       // 提交渲染后切到 Tasks tab
+  onCreated: () => void;        // 新建草稿后切到 Chat tab
   setDraftId: (id: string | null) => void;
 }
 
-export default function DraftPanel({ onRendered, setDraftId }: Props) {
+export default function DraftPanel({ onRendered, onCreated, setDraftId }: Props) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [loading, setLoading] = useState(false);
   const [rendering, setRendering] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const fetchDrafts = async () => {
     setLoading(true);
@@ -21,6 +23,21 @@ export default function DraftPanel({ onRendered, setDraftId }: Props) {
   };
 
   useEffect(() => { fetchDrafts(); }, []);
+
+  const handleCreate = async () => {
+    setCreating(true);
+    try {
+      const r = await api.createDraft();
+      if (r.success && r.output?.draft_id) {
+        setDraftId(r.output.draft_id);
+        onCreated();
+      } else {
+        alert('新建草稿失败: ' + (r.error || '未知错误'));
+      }
+    } catch (err) {
+      alert('新建草稿失败: ' + (err as Error).message);
+    } finally { setCreating(false); }
+  };
 
   const handleDelete = async (folder: string) => {
     if (!confirm('删除该草稿? 不可恢复.')) return;
@@ -53,10 +70,17 @@ export default function DraftPanel({ onRendered, setDraftId }: Props) {
     <div className="h-full w-full flex flex-col p-12 overflow-y-auto">
       <div className="flex items-center justify-between mb-12 border-b border-[#121212]/10 pb-6">
         <h2 className="text-4xl font-light italic font-serif">Project Drafts</h2>
-        <button onClick={fetchDrafts}
-          className="flex items-center gap-2 px-4 py-2 border border-[#121212]/20 text-[#121212] hover:bg-[#121212]/5 transition-colors text-[10px] uppercase tracking-widest font-bold">
-          <RefreshCw size={14} strokeWidth={1.5} /> Refresh
-        </button>
+        <div className="flex gap-4">
+          <button onClick={fetchDrafts}
+            className="flex items-center gap-2 px-4 py-2 border border-[#121212]/20 text-[#121212] hover:bg-[#121212]/5 transition-colors text-[10px] uppercase tracking-widest font-bold">
+            <RefreshCw size={14} strokeWidth={1.5} /> Refresh
+          </button>
+          <button onClick={handleCreate} disabled={creating}
+            className="flex items-center gap-2 px-4 py-2 bg-[#121212] hover:bg-[#121212]/80 text-white transition-colors disabled:opacity-50 text-[10px] uppercase tracking-widest font-bold">
+            {creating ? <Loader2 size={14} strokeWidth={1.5} className="animate-spin" /> : <Plus size={14} strokeWidth={1.5} />}
+            New Draft
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -73,12 +97,12 @@ export default function DraftPanel({ onRendered, setDraftId }: Props) {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-8">
           {drafts.map((d) => (
             <div key={d.id} className="border border-[#121212]/10 bg-transparent overflow-hidden group flex flex-col hover:border-[#121212]/30 transition-colors">
-              <div className="h-48 border-b border-[#121212]/10 relative overflow-hidden flex-shrink-0 bg-[#121212]/5 flex items-center justify-center">
+              <div className="h-48 border-b border-[#121212]/10 relative overflow-hidden flex-shrink-0 bg-[#121212] flex items-center justify-center">
                 {d.cover_url ? (
-                  <img src={d.cover_url} alt={d.name} className="w-full h-full object-cover"
+                  <img src={d.cover_url} alt={d.name} className="w-full h-full object-contain"
                     onError={(e) => { e.currentTarget.style.display = 'none'; }} />
                 ) : (
-                  <Video size={32} strokeWidth={1} className="text-[#121212]/20" />
+                  <Video size={32} strokeWidth={1} className="text-[#FDFCF8]/20" />
                 )}
                 <div className="absolute bottom-3 right-3 bg-[#121212] text-[#FDFCF8] text-[9px] px-2 py-1 tracking-widest font-medium">
                   {d.duration.toFixed(1)}S

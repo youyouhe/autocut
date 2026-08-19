@@ -258,8 +258,11 @@ def _draft_cover_url(draft_dir, folder_name):
         jpg = os.path.join(covers_dir, folder_name + '.jpg')
         src_mtime = os.path.getmtime(src)
         if not (os.path.isfile(jpg) and os.path.getmtime(jpg) > src_mtime):
+            # 短边缩到 480: 横屏源出 480x270, 竖屏源出 ~270x480 —— 竖屏封面保持竖版
+            # (前端 object-contain 以高度为基准展示, 竖图不会被裁成扁条)
+            vf = "scale='if(gt(iw,ih),480,-2)':'if(gt(iw,ih),-2,480)'"
             subprocess.run(['ffmpeg', '-y', '-v', 'error', '-ss', '1', '-i', src,
-                            '-frames:v', '1', '-vf', 'scale=480:-2', jpg],
+                            '-frames:v', '1', '-vf', vf, jpg],
                            capture_output=True, timeout=20)
         if os.path.isfile(jpg):
             return '/api/video/serve?path=' + quote(jpg.replace('\\', '/'))
