@@ -106,6 +106,43 @@ async def list_tools():
             }
         ),
         Tool(
+            name="query_draft",
+            description="查询草稿的结构摘要(轨道/片段/时长), 编辑前用它定位要删改的片段。返回每个轨道的类型、名称、render_index, 及每个片段的 index/segment_id/start/end/duration/type/text/material_id。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "draft_id": {"type": "string"},
+                },
+                "required": ["draft_id"]
+            }
+        ),
+        Tool(
+            name="delete_segment",
+            description="从草稿删除一个片段。定位方式二选一: (1) segment_id 精确匹配; (2) track_name + index。删除后自动清理孤儿素材并重算总时长。先 query_draft 拿到 segment_id 或 index 再删。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "draft_id": {"type": "string"},
+                    "track_name": {"type": "string", "description": "轨道名称 (按 index 删除时必填)"},
+                    "index": {"type": "integer", "description": "片段在轨道中的序号 (按 index 删除时必填)"},
+                    "segment_id": {"type": "string", "description": "片段全局id (精确匹配, 优先使用)"},
+                },
+                "required": ["draft_id"]
+            }
+        ),
+        Tool(
+            name="delete_track",
+            description="删除一整条轨道及其上所有片段。删除后自动清理孤儿素材并重算总时长。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "draft_id": {"type": "string"},
+                    "track_name": {"type": "string", "description": "要删除的轨道名称"},
+                },
+                "required": ["draft_id", "track_name"]
+            }
+        ),
+        Tool(
             name="save_draft",
             description="保存草稿到剪映草稿目录，生成可渲染的草稿文件夹。",
             inputSchema={
@@ -195,6 +232,18 @@ async def call_tool(name: str, arguments: dict):
         elif name == "add_audio":
             result = _post("add_audio", json=arguments)
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
+        elif name == "query_draft":
+            result = _post("query_draft", json=arguments)
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+        elif name == "delete_segment":
+            result = _post("delete_segment", json=arguments)
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+        elif name == "delete_track":
+            result = _post("delete_track", json=arguments)
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
 
         elif name == "save_draft":
             result = _post("save_draft", json=arguments)

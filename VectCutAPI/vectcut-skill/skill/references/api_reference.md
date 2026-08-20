@@ -85,6 +85,177 @@
 
 ---
 
+### 草稿编辑
+
+以下端点提供草稿编辑能力 (此前只能 create/add)。均直接操作 DRAFT_CACHE 中存活的 `Script_file`, 删除后自动做两件清理:
+
+1. **清理孤儿素材** — 扫描所有剩余片段引用到的 `material_id` + `extra_material_refs`, 把 `Script_material` 各列表里不再被任何片段引用的素材剔除 (避免剪映加载到悬挂引用)。
+2. **重算总时长** — `script.duration = max(所有剩余片段的 end)`。
+
+> 典型工作流: 先 `query_draft` 拿到要删的 `segment_id` 或 (track_name + index), 再调 `delete_segment` / `delete_track`, 最后 `save_draft` 持久化。
+
+#### POST /query_draft
+
+返回对 agent 友好的草稿结构摘要 (轨道 / 片段 / 时长), 用于编辑前定位要删改的片段。不返回完整 script JSON (那是 `/query_script` 的职责)。
+
+**请求参数:**
+
+| 参数 | 类型 | 必需 | 说明 |
+|------|------|------|------|
+| draft_id | string | 是 | 草稿 ID |
+
+**响应示例:**
+
+```json
+{
+  "success": true,
+  "output": {
+    "draft_id": "dfd_cat_1234_abc",
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "duration_sec": 3.0,
+    "track_count": 3,
+    "tracks": [
+      {
+        "track_name": "video_main",
+        "track_type": "video",
+        "render_index": 0,
+        "is_imported": false,
+        "segments": [
+          {
+            "index": 0,
+            "segment_id": "d4c9bc48...",
+            "track_name": "video_main",
+            "start": 0.0,
+            "end": 3.0,
+            "duration": 3.0,
+            "type": "Video_segment",
+            "material_id": "..."
+          }
+        ]
+      },
+      {
+        "track_name": "text",
+        "track_type": "text",
+        "render_index": 1,
+        "is_imported": false,
+        "segments": [
+          {
+            "index": 0,
+            "segment_id": "82f24de2...",
+            "track_name": "text",
+            "start": 0.0,
+            "end": 2.0,
+            "duration": 2.0,
+            "type": "Text_segment",
+            "text": "第一句",
+            "material_id": "..."
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+每个片段字段说明:
+
+| 字段 | 说明 |
+|------|------|
+| index | 片段在所在轨道中的序号 (从 0 起) |
+| segment_id | 片段全局 id (用于 `delete_segment` 精确定位) |
+| track_name | 所属轨道名 |
+| start / end / duration | 时间轴上的时间范围 (秒) |
+| type | 片段类型 (`Video_segment` / `Audio_segment` / `Text_segment` / `Sticker_segment` 等) |
+| text | 文本片段的文字内容 (仅文本片段有) |
+| material_id | 引用的素材 id |
+
+---
+
+#### POST /delete_segment
+
+从草稿删除一个片段。删除后自动清理孤儿素材并重算总时长。
+
+**请求参数:**
+
+| 参数 | 类型 | 必需 | 说明 |
+|------|------|------|------|
+| draft_id | string | 是 | 草稿 ID |
+| segment_id | string | 二选一 | 片段全局 id, 精确匹配 (优先使用) |
+| track_name | string | 二选一 | 轨道名称 (与 index 配合定位) |
+| index | int | 二选一 | 片段在轨道中的序号 (需同时给 track_name) |
+
+> 定位方式二选一: `segment_id` 精确匹配, 或 `track_name` + `index`。
+
+**响应示例:**
+
+```json
+{
+  "success": true,
+  "output": {
+    "draft_id": "dfd_cat_1234_abc",
+    "deleted": {
+      "segment_id": "6c9eb094...",
+      "track_name": "text2",
+      "index": 0,
+      "start": 2.0,
+      "end": 4.0,
+      "duration": 2.0,
+      "type": "Text_segment",
+      "text": "第二句",
+      "material_id": "f1ad356b..."
+    },
+    "orphan_materials_removed": {
+      "videos": 0, "audios": 0, "stickers": 0, "texts": 1,
+      "animations": 0, "video_effects": 0, "audio_effects": 0,
+      "audio_fades": 0, "speeds": 0, "masks": 0,
+      "transitions": 0, "filters": 0, "canvases": 0
+    },
+    "duration_sec": 3.0
+  }
+}
+```
+
+---
+
+#### POST /delete_track
+
+删除一整条轨道及其上所有片段 (支持普通轨道和导入轨道)。删除后自动清理孤儿素材并重算总时长。
+
+**请求参数:**
+
+| 参数 | 类型 | 必需 | 说明 |
+|------|------|------|------|
+| draft_id | string | 是 | 草稿 ID |
+| track_name | string | 是 | 要删除的轨道名称 |
+
+**响应示例:**
+
+```json
+{
+  "success": true,
+  "output": {
+    "draft_id": "dfd_cat_1234_abc",
+    "deleted_track": {
+      "track_name": "text2",
+      "track_type": "text",
+      "segment_count": 0,
+      "is_imported": false
+    },
+    "orphan_materials_removed": {
+      "videos": 0, "audios": 0, "stickers": 0, "texts": 0,
+      "animations": 0, "video_effects": 0, "audio_effects": 0,
+      "audio_fades": 0, "speeds": 0, "masks": 0,
+      "transitions": 0, "filters": 0, "canvases": 0
+    },
+    "duration_sec": 3.0
+  }
+}
+```
+
+---
+
 ### 素材添加
 
 #### POST /add_video

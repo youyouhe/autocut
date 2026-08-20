@@ -29,6 +29,7 @@ from save_draft_impl import save_draft_impl, query_task_status, query_script_imp
 from add_effect_impl import add_effect_impl
 from add_sticker_impl import add_sticker_impl
 from create_draft import create_draft
+from delete_impl import query_draft_impl, delete_segment_impl, delete_track_impl
 from util import generate_draft_url as utilgenerate_draft_url, hex_to_rgb
 from pyJianYingDraft.text_segment import TextStyleRange, Text_style, Text_border
 
@@ -724,6 +725,78 @@ def query_script():
     except Exception as e:
         error_message = f"Error occurred while querying script: {str(e)}. "
         result["error"] = error_message
+        return jsonify(result)
+
+@app.route('/query_draft', methods=['POST'])
+def query_draft():
+    """返回对 agent 友好的草稿结构摘要 (轨道/片段/时长), 用于编辑前定位片段。"""
+    data = request.get_json()
+    draft_id = data.get('draft_id')
+
+    result = {"success": False, "output": "", "error": ""}
+    if not draft_id:
+        result["error"] = "Hi, the required parameter 'draft_id' is missing."
+        return jsonify(result)
+
+    try:
+        summary = query_draft_impl(draft_id=draft_id)
+        result["success"] = True
+        result["output"] = summary
+        return jsonify(result)
+    except Exception as e:
+        result["error"] = f"Error occurred while querying draft: {str(e)}. "
+        return jsonify(result)
+
+@app.route('/delete_segment', methods=['POST'])
+def delete_segment():
+    """从草稿删除一个片段。定位方式: segment_id (精确) 或 track_name + index。"""
+    data = request.get_json()
+    draft_id = data.get('draft_id')
+    track_name = data.get('track_name')          # 可选
+    index = data.get('index')                    # 可选, 与 track_name 配合
+    segment_id = data.get('segment_id')          # 可选, 精确匹配
+
+    result = {"success": False, "output": "", "error": ""}
+    if not draft_id:
+        result["error"] = "Hi, the required parameter 'draft_id' is missing."
+        return jsonify(result)
+    if segment_id is None and (track_name is None or index is None):
+        result["error"] = "需要提供 segment_id, 或同时提供 track_name 与 index 来定位片段。"
+        return jsonify(result)
+
+    try:
+        out = delete_segment_impl(
+            draft_id=draft_id,
+            track_name=track_name,
+            index=index,
+            segment_id=segment_id,
+        )
+        result["success"] = True
+        result["output"] = out
+        return jsonify(result)
+    except Exception as e:
+        result["error"] = f"Error occurred while deleting segment: {str(e)}. "
+        return jsonify(result)
+
+@app.route('/delete_track', methods=['POST'])
+def delete_track():
+    """删除一整条轨道 (含其上所有片段)。"""
+    data = request.get_json()
+    draft_id = data.get('draft_id')
+    track_name = data.get('track_name')
+
+    result = {"success": False, "output": "", "error": ""}
+    if not draft_id or not track_name:
+        result["error"] = "Hi, the required parameters 'draft_id' and 'track_name' are missing."
+        return jsonify(result)
+
+    try:
+        out = delete_track_impl(draft_id=draft_id, track_name=track_name)
+        result["success"] = True
+        result["output"] = out
+        return jsonify(result)
+    except Exception as e:
+        result["error"] = f"Error occurred while deleting track: {str(e)}. "
         return jsonify(result)
 
 @app.route('/save_draft', methods=['POST'])
