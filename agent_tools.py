@@ -974,6 +974,48 @@ def execute_tool(name, args, ctx):
 
 
 
+
+
+# ---- 工具输出进 context 前的压缩 ----
+# 原则: 结构保留、长文本截断、必需数据(srt/segments 时间轴)不碰; 截断处标注可重调获取.
+# 模型上下文按 token 计费, 大输出会加速 compaction 并稀释注意力.
+
+_TRUNC_KEEP_FULL = {'srt'}          # 绝不截断的字段 (add_subtitle 依赖全文)
+_TRUNC_FIELD_MAX = 800              # 普通字符串字段上限
+_TRUNC_TOTAL_MAX = 6000             # 单个工具结果总字符上限
+
+
+def _compact_value(v, key=''):
+    """递归压缩: 长 string 截断 (白名单字段除外), dict/list 深入."""
+    if isinstance(v, str):
+        if key in _TRUNC_KEEP_FULL or len(v) <= _TRUNC_FIELD_MAX:
+            return v
+        return v[:_TRUNC_FIELD_MAX] + f'…[已截断{len(v) - _TRUNC_FIELD_MAX}字, 需要完整内容请重新调用工具]'
+    if isinstance(v, dict):
+        return {k: _compact_value(x, k) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_compact_value(x, key) for x in v]
+    return v
+
+
+def compact_tool_output(name, result_json):
+    """工具输出 JSON → 压缩后的 JSON (给模型看的版本; 前端展示走 on_tool_executed 原文)."""
+    try:
+        obj = json.loads(result_json)
+    except Exception:
+        return result_json[:_TRUNC_TOTAL_MAX]
+    if not isinstance(obj, dict):
+        return result_json[:_TRUNC_TOTAL_MAX]
+    # get_transcript: full_text 与 segments 内容重复, 砍 full_text 省 ~一半
+    if name == 'get_transcript' and obj.get('segments'):
+        obj['full_text'] = f'(共{len(obj["segments"])}段, 内容见 segments, 略)'
+    out = _compact_value(obj)
+    s = json.dumps(out, ensure_ascii=False)
+    return s if len(s) <= _TRUNC_TOTAL_MAX else json.dumps(
+        {'ok': out.get('ok'), 'error': out.get('error'), 'note': f'结果过大({len(s)}字)已省略, 请缩小查询范围重试'},
+        ensure_ascii=False)
+
+
 def build_tools(ctx: ToolContext):
     """把 TOOL_SCHEMAS 包装成 Agents SDK 的 FunctionTool 列表.
     on_invoke_tool 统一走 execute_tool 单一分发点 (防御逻辑不重复)."""
@@ -994,10 +1036,10 @@ def build_tools(ctx: ToolContext):
                 except Exception as te:
                     out = json.dumps({'error': f'工具执行异常: {te}'}, ensure_ascii=False)
                 try:
-                    ctx.on_tool_executed(tool_name, parsed, out)
+                    ctx.on_tool_executed(tool_name, parsed, out)   # 前端卡片: 原文
                 except Exception:
                     pass
-                return out
+                return compact_tool_output(tool_name, out)        # 模型: 压缩版
             return _invoke
 
         tools.append(FunctionTool(

@@ -17,8 +17,13 @@ SESSION_DB = os.environ.get('AGENT_SESSION_DB', os.path.join(HERE, 'agent_sessio
 # 截断切掉曾导致 agent 每轮重查同一工具 —— 见 render_server 旧历史回灌注释)
 KEY_FIELDS = ('srt', 'segments', 'transcript', 'tags', 'tracks', 'resources', 'shots')
 KEY_BUDGET = 1200
-WINDOW_ITEMS = 40       # 超过触发 compaction
-KEEP_RECENT = 15        # compaction 后保留的最近条数
+# 压缩触发: 按上下文大小 (token 估算), 不按条数 —— 参考 Claude Code 的 auto-compact
+# (阈值设在模型窗口的安全比例). 条数只留一个很高的防失控上限.
+# 估算: 中英混排 ~2 字符/token, 按 len(str)/2 保守估.
+COMPACT_TOKEN_THRESHOLD = int(os.environ.get('AGENT_COMPACT_TOKENS', '300000'))  # 1M 窗口的 30%
+COMPACT_CHARS = COMPACT_TOKEN_THRESHOLD * 2
+HARD_ITEM_LIMIT = 500    # 条数防失控 (正常长对话不会触达; 大小阈值先触发)
+KEEP_RECENT = 15         # compaction 后保留的最近条数
 
 
 def build_receipt_text(td):
@@ -148,7 +153,9 @@ async def maybe_compact(session: SQLiteSession, conversation_id: str, uid: str) 
     """会话超长时压缩: 旧 items → flash 模型摘要 + 最近 KEEP_RECENT 条.
     返回摘要文本 (未触发返回 ''). 摘要同时回写 chats.db 一条特殊 assistant 条目."""
     items = await session.get_items()
-    if len(items) <= WINDOW_ITEMS and estimate_chars(items) < 25000:
+    # 触发条件: 估算 token 超阈值 (默认 30 万, 1M 窗口的安全比例; env 可调)
+    # 或条数超过防失控上限. 不再按固定条数触发 —— 长输出会话早压, 短输出会话不白压.
+    if estimate_chars(items) < COMPACT_CHARS and len(items) <= HARD_ITEM_LIMIT:
         return ''
     old, recent = items[:-KEEP_RECENT], items[-KEEP_RECENT:]
     # 切口不许落在孤儿工具输出上 (其 tool_calls 在 old 段会被摘要掉, 留下孤儿触发 400)
