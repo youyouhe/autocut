@@ -1142,6 +1142,11 @@ def api_list_drafts():
         _tasks = task_store.load_all(user_id=uid)
         _tasks = _tasks.values() if isinstance(_tasks, dict) else _tasks
         for t in _tasks:
+            dn = t.get('draft_name')
+            if not dn or t.get('status') != 'done' or not t.get('mp4_path'):
+                continue
+            if dn not in _done or (t.get('created') or 0) > (_done[dn].get('created') or 0):
+                _done[dn] = t
         for d in drafts:
             t = _done.get(d.get('folder')) or _done.get(d.get('name'))
             if t:
