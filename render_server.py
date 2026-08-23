@@ -944,7 +944,7 @@ def api_draft_add_asset(draft_id):
         return jsonify({'ok': False, 'error': '草稿缓存校验失败: %s' % repr(e)[:160]}), 500
 
     # 2. 路径解析 (裸文件名 → 上传目录绝对路径; 已是绝对路径/协议不动).
-    url = _resolve_asset_url(asset_path)
+    url = _resolve_asset_url(asset_path, uid=uid)
 
     # 2.5 去重判定 —— 手动导入(加到草稿)不允许重复导入同一素材.
     #     判据: 按 url_to_hash(解析后的 url) 拼出 VectCutAPI 内部会生成的 material_name,
@@ -1881,12 +1881,13 @@ def _text_animation_names(kind):
         return []
 
 
-def _resolve_asset_url(u):
+def _resolve_asset_url(u, uid=None):
     """把 LLM 传的素材标识解析成本地绝对路径 (正斜杠, pyJianYingDraft/ffprobe 都认).
     LLM 有时只传文件名 (如 'VID_20260819_102125.mp4') 而不是完整路径 —— 这种裸名会让
     VectCutAPI 的 update_media_metadata ffprobe 探不到文件 → 素材时长 0 → 主视频
     segment 零时长 → 渲染出来黑屏无声 (叠加段因显式传了 start/end 不受影响).
-    规则: http(s)/file 协议不动; 已存在的绝对路径不动; 其余按文件名去上传目录找.
+    规则: http(s)/file 协议不动; 已存在的绝对路径不动; 其余按文件名找 ——
+    优先本租户子目录 (UPLOAD_DIR/<uid>/, 多租户后素材都在这), 再上传根目录/GUI 目录.
     模块级 (原为 generate() 闭包; 提到模块级以便 /api/draft/<id>/add-asset 复用,
     generate() 闭包内同名调用已删, 一并走这里)."""
     if not u:
@@ -1896,7 +1897,11 @@ def _resolve_asset_url(u):
     if os.path.isabs(u) and os.path.isfile(u):
         return u.replace('\\', '/')
     base = os.path.basename(u.replace('\\', '/'))
-    for d in (config.UPLOAD_DIR, config.GUI_UPLOAD_DIR):
+    search_dirs = []
+    if uid:
+        search_dirs.append(os.path.join(config.UPLOAD_DIR, uid))
+    search_dirs.extend((config.UPLOAD_DIR, config.GUI_UPLOAD_DIR))
+    for d in search_dirs:
         cand = os.path.join(d, base)
         if os.path.isfile(cand):
             resolved = cand.replace('\\', '/')

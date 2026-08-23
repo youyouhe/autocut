@@ -633,7 +633,7 @@ def execute_tool(name, args, ctx):
         target_start = args.get('target_start')
         if target_start is None:
             target_start = rs._track_end_seconds(did, track_name)
-        d = {'draft_id': did, 'video_url': rs._resolve_asset_url(args.get('url','')),
+        d = {'draft_id': did, 'video_url': rs._resolve_asset_url(args.get('url',''), uid=ctx.uid),
              'track_name': track_name, 'target_start': target_start}
         if args.get('relative_index') is not None: d['relative_index'] = args['relative_index']
         if args.get('start') is not None: d['start'] = args['start']
@@ -690,7 +690,7 @@ def execute_tool(name, args, ctx):
     elif name == 'add_audio':
         did = args.get('draft_id') or draft_id
         if not did: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
-        d = {'draft_id': did, 'audio_url': rs._resolve_asset_url(args.get('url','')),
+        d = {'draft_id': did, 'audio_url': rs._resolve_asset_url(args.get('url',''), uid=ctx.uid),
              'volume': args.get('volume', 0.5)}
         if args.get('start') is not None: d['start'] = args['start']
         if args.get('end') is not None: d['end'] = args['end']
@@ -707,7 +707,7 @@ def execute_tool(name, args, ctx):
         end = args.get('end')
         if end is None:
             end = start + 3   # 没给时长默认展示 3 秒
-        d = {'draft_id': did, 'image_url': rs._resolve_asset_url(args.get('url','')),
+        d = {'draft_id': did, 'image_url': rs._resolve_asset_url(args.get('url',''), uid=ctx.uid),
              'track_name': track_name, 'start': start, 'end': end}
         if args.get('relative_index') is not None: d['relative_index'] = args['relative_index']
         r = rs._post_internal('add_image', d, user_id=ctx.uid)
