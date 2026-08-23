@@ -1786,6 +1786,12 @@ def api_chat():
         return produced
 
     async def _run_agent():
+        # 先修复历史切口孤儿 (compaction 曾切在工具输出上 → DeepSeek 400), 再压缩
+        try:
+            if await agent_session.sanitize_session(session):
+                print('[chat] 会话 %s 历史切口已修复 (丢弃孤儿工具输出)' % conversation_id[:8], flush=True)
+        except Exception as e:
+            print('[chat] 历史修复失败(跳过): %s' % e, flush=True)
         # 会话超长压缩 (摘要 + 最近条目)
         try:
             await agent_session.maybe_compact(session, conversation_id, uid)

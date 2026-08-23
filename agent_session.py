@@ -100,6 +100,35 @@ def estimate_chars(items) -> int:
     return sum(len(str(i)) for i in items)
 
 
+def _is_orphan_output(item) -> bool:
+    """条目是否为"工具输出"类 (function_call_output / role=tool) —— 若它出现在
+    保留窗口的开头, 其对应的 tool_calls 调用已被切掉, 会触发 DeepSeek 400:
+    Messages with role 'tool' must be a response to a preceding message with 'tool_calls'."""
+    t = str(getattr(item, 'type', None) or (item.get('type') if isinstance(item, dict) else '') or '')
+    role = str(getattr(item, 'role', None) or (item.get('role') if isinstance(item, dict) else '') or '')
+    return 'function_call_output' in t or 'tool_output' in t or role == 'tool'
+
+
+def _trim_leading_orphans(items):
+    """丢掉窗口开头的孤儿工具输出 (及其前面的 reasoning 残段), 直到非孤儿条目."""
+    out = list(items)
+    while out and (_is_orphan_output(out[0]) or str(getattr(out[0], 'type', '') or (out[0].get('type', '') if isinstance(out[0], dict) else '')).startswith('reasoning')):
+        out.pop(0)
+    return out
+
+
+async def sanitize_session(session: SQLiteSession) -> bool:
+    """修复已损坏的会话历史: 开头若为孤儿工具输出, 丢弃后整体重写. 返回是否修复."""
+    items = await session.get_items()
+    trimmed = _trim_leading_orphans(items)
+    if len(trimmed) == len(items):
+        return False
+    await session.clear_session()
+    if trimmed:
+        await session.add_items(trimmed)
+    return True
+
+
 async def maybe_compact(session: SQLiteSession, conversation_id: str, uid: str) -> str:
     """会话超长时压缩: 旧 items → flash 模型摘要 + 最近 KEEP_RECENT 条.
     返回摘要文本 (未触发返回 ''). 摘要同时回写 chats.db 一条特殊 assistant 条目."""
@@ -107,6 +136,9 @@ async def maybe_compact(session: SQLiteSession, conversation_id: str, uid: str) 
     if len(items) <= WINDOW_ITEMS and estimate_chars(items) < 25000:
         return ''
     old, recent = items[:-KEEP_RECENT], items[-KEEP_RECENT:]
+    # 切口不许落在孤儿工具输出上 (其 tool_calls 在 old 段会被摘要掉, 留下孤儿触发 400)
+    recent = _trim_leading_orphans(recent)
+    old = items[:len(items) - len(recent)]
     old_text = '\n'.join(
         f"[{i.get('role', '?')}] {str(i.get('content', ''))[:600]}" for i in old
     )[:12000]
