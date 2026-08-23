@@ -173,7 +173,7 @@ def capture_failure_screen(tag='fail'):
             bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
             gdi32.SelectObject(mdc, bmp)
             gdi32.BitBlt(mdc, 0, 0, w, h, hdc, 0, 0, 0x00CC0020)  # SRCCOPY
-            shots_dir = os.path.join(HERE, 'shots')
+            shots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'shots')
             os.makedirs(shots_dir, exist_ok=True)
             path = os.path.join(shots_dir, 'shot_%s_%s.png' % (
                 time.strftime('%H%M%S'), tag))
