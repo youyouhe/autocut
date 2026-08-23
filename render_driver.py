@@ -154,6 +154,64 @@ def inject_draft(src_draft_dir, new_name=None):
     log('注入草稿: %s -> %s (id=%s)' % (src_name, new_name, new_id))
     return dst
 
+def capture_failure_screen(tag='fail'):
+    """失败诊断: 截一张目标桌面 (隔离桌面) 的全屏图, 存到渲染节点工作目录 shots/.
+    隔离桌面里的画面平时完全不可见 (主桌面看不到), 出问题时只能靠截图判断
+    "导出窗口到底弹没弹/点了哪里". 用 GDI BitBlt, 无第三方依赖."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        with _on_target_desktop():
+            hdc = user32.GetDC(None)
+            if not hdc:
+                return None
+            w = user32.GetSystemMetrics(0)
+            h = user32.GetSystemMetrics(1)
+            mdc = gdi32.CreateCompatibleDC(hdc)
+            bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
+            gdi32.SelectObject(mdc, bmp)
+            gdi32.BitBlt(mdc, 0, 0, w, h, hdc, 0, 0, 0x00CC0020)  # SRCCOPY
+            shots_dir = os.path.join(HERE, 'shots')
+            os.makedirs(shots_dir, exist_ok=True)
+            path = os.path.join(shots_dir, 'shot_%s_%s.png' % (
+                time.strftime('%H%M%S'), tag))
+            # BMP 直写 (无 PNG 编码器依赖), 后缀仍 .png 但实为 BMP —— 查看器都能开
+            _save_bmp(mdc, bmp, path, w, h)
+            gdi32.DeleteObject(bmp); gdi32.DeleteDC(mdc); user32.ReleaseDC(None, hdc)
+            log('已截图: %s' % path)
+            return path
+    except Exception as e:
+        log('截图失败: %s' % e)
+        return None
+
+
+def _save_bmp(mdc, bmp, path, w, h):
+    """把 HBITMAP 写成 24/32 位 BMP 文件 (BGRA 行序, 4 字节对齐)."""
+    import ctypes
+    from ctypes import wintypes
+    gdi32 = ctypes.windll.gdi32
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [('biSize', wintypes.DWORD), ('biWidth', wintypes.LONG),
+                    ('biHeight', wintypes.LONG), ('biPlanes', wintypes.WORD),
+                    ('biBitCount', wintypes.WORD), ('biCompression', wintypes.DWORD),
+                    ('biSizeImage', wintypes.DWORD), ('biXPelsPerMeter', wintypes.LONG),
+                    ('biYPelsPerMeter', wintypes.LONG), ('biClrUsed', wintypes.DWORD),
+                    ('biClrImportant', wintypes.DWORD)]
+
+    bi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+    buf = ctypes.create_string_buffer(w * h * 4)
+    gdi32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bi), 0)
+    import struct as _s
+    hdr = b'BM' + _s.pack('<IHHI', 54 + len(buf.raw), 0, 0, 54)
+    with open(path, 'wb') as f:
+        f.write(hdr)
+        f.write(bytes(bi))
+        f.write(buf.raw)
+
+
 def _cleanup_injected_draft(draft_name):
     """删除注入到剪映草稿根目录的草稿文件夹 + 同步 root_meta_info.json 条目.
     成功与失败路径都要调 (失败不清理会残留 rd* 草稿, 下次启动弹"草稿丢失"对话框且
@@ -1246,7 +1304,9 @@ class Driver:
                 log('  ✓ 重试循环结束后发现 mp4 已存在, 判定成功')
                 ok = True
             else:
-                log('confirm 4次未触发渲染, 中止'); _cleanup_injected_draft(draft_name); return False
+                log('confirm 4次未触发渲染, 中止')
+                capture_failure_screen('export_fail')  # 诊断: 看导出环节屏幕上到底什么状态
+                _cleanup_injected_draft(draft_name); return False
         emit_progress('done', 100)
 
         # 4. 关闭完成提示 (完成窗口 modal) + 关编辑器回首页
