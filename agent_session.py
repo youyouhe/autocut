@@ -118,14 +118,29 @@ def _trim_leading_orphans(items):
 
 
 async def sanitize_session(session: SQLiteSession) -> bool:
-    """修复已损坏的会话历史: 开头若为孤儿工具输出, 丢弃后整体重写. 返回是否修复."""
+    """修复已损坏的会话历史: 丢弃所有"无主"工具输出 (call_id 在前文中没有对应的
+    function_call —— compaction 曾把调用切进摘要段留下的孤儿, DeepSeek 严格校验 400).
+    返回是否发生了修复."""
     items = await session.get_items()
-    trimmed = _trim_leading_orphans(items)
-    if len(trimmed) == len(items):
+
+    def _t(it):
+        return str((it.get('type') if isinstance(it, dict) else getattr(it, 'type', '')) or '')
+    def _cid(it):
+        return (it.get('call_id') if isinstance(it, dict) else getattr(it, 'call_id', None)) or ''
+
+    call_ids = {_cid(it) for it in items if _t(it) == 'function_call'}
+    kept, dropped = [], 0
+    for it in items:
+        if _t(it) == 'function_call_output' and _cid(it) not in call_ids:
+            dropped += 1
+            continue
+        kept.append(it)
+    if not dropped:
         return False
     await session.clear_session()
-    if trimmed:
-        await session.add_items(trimmed)
+    if kept:
+        await session.add_items(kept)
+    print(f'[agent_session] 会话修复: 丢弃 {dropped} 个孤儿工具输出', flush=True)
     return True
 
 
