@@ -109,6 +109,29 @@ def build_agent(ctx):
         openai_client=AsyncOpenAI(base_url=base_url, api_key=api_key),
     )
 
+    # bsk (BrowserSkill) 驱动本机浏览器 —— 无桌面环境 (无 X11/Chrome) 的服务器上不可用.
+    # 检测不到就直接收起 bsk_run 工具与发布专员, 让 agent 不承诺做不到的事.
+    import shutil as _shutil
+    import config as _config
+    _bsk = getattr(_config, 'BSK_BIN', 'bsk')
+    bsk_available = bool(_shutil.which(_bsk) or (_bsk != 'bsk' and os.path.isfile(_bsk)))
+
+    all_tools = build_tools(ctx)
+    tools = [t for t in all_tools if bsk_available or t.name != 'bsk_run']
+
+    if not bsk_available:
+        # 无发布能力: 不带 handoff, instructions 补一句说明
+        main_agent = Agent(
+            name='视频编辑助手',
+            instructions=lambda wrapper, agent: build_instructions(ctx) + (
+                '\n\n15. 本服务器未安装 bsk (BrowserSkill) / 无浏览器环境, "发布到视频号/抖音/小红书"功能不可用 —— 用户要求发布时如实告知: 请在装有浏览器和 BrowserSkill 的 Windows 机器上操作, 不要尝试调用任何发布工具。'),
+            tools=tools,
+            model=model,
+            model_settings=ModelSettings(tool_choice='auto'),
+            input_guardrails=[_input_guard],
+        )
+        return main_agent
+
     # ---- 发布专员 (handoff 目标): 只带发布相关工具, 专职驱动浏览器发布 ----
     _PUBLISH_INSTRUCTIONS = """你是视频发布专员, 专职把已渲染好的 mp4 发布到视频号/抖音/小红书.
 只能用 bsk_run 驱动 BrowserSkill 完成网页操作. 标准流程:
@@ -131,7 +154,7 @@ g. 每步最多重试一次, 连续失败 request-help 或如实上报卡点
     main_agent = Agent(
         name='视频编辑助手',
         instructions=lambda wrapper, agent: build_instructions(ctx),
-        tools=build_tools(ctx),
+        tools=tools,
         model=model,
         model_settings=ModelSettings(tool_choice='auto'),  # 不设 max_tokens (思考型模型思考计入输出)
         handoffs=[publish_specialist],   # 用户要"发布到视频号/抖音/小红书"时移交发布专员
