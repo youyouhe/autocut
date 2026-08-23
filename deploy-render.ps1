@@ -1,14 +1,14 @@
-# deploy-render.ps1 — 把源码目录的渲染节点所需文件同步到 C:\autocut-render-node
-# 用法: 在源码目录 (C:\Users\Administrator\autocut) 下执行
+# deploy-render.ps1 — Sync render-node files from source dir to C:\autocut-render-node
+# Usage (from source dir, e.g. C:\Users\Administrator\autocut):
 #   powershell -ExecutionPolicy Bypass -File deploy-render.ps1
 #
-# 渲染节点 (render_service) 运行所需的最小文件集:
+# Minimal file set required by render_service:
 #   render_service.py / render_driver.py / render_monitor.py / upgrade_watchdog.py
-#   config.py / task_store.py  (render_service 直接 import)
-#   requirements.txt           (首次部署装依赖用)
-#   .env                       (渲染侧配置: JY_APP_BASE / DESKTOP_NAMES / RENDER_SERVICE_TOKEN 等;
-#                               目标目录已有 .env 时不覆盖 —— 那边是渲染机专属配置)
-#   calib.json                 (坐标校准; 存在才拷, 目标已有则覆盖为最新)
+#   config.py / task_store.py  (directly imported by render_service)
+#   requirements.txt           (for first-time dependency install)
+#   .env                       (render-side config: JY_APP_BASE / DESKTOP_NAMES / RENDER_SERVICE_TOKEN;
+#                               NOT overwritten if target already has one)
+#   calib.json                 (coordinate calibration; overwritten with latest if present)
 
 $ErrorActionPreference = 'Stop'
 $src = $PSScriptRoot
@@ -28,30 +28,30 @@ $files = @(
 
 foreach ($f in $files) {
     $s = Join-Path $src $f
-    if (-not (Test-Path $s)) { Write-Warning "源目录缺少 $f, 跳过"; continue }
+    if (-not (Test-Path $s)) { Write-Warning "MISSING in source: $f (skipped)"; continue }
     Copy-Item $s -Destination $dst -Force
-    Write-Host "已更新 $f"
+    Write-Host "UPDATED  $f"
 }
 
-# .env: 目标已有则保留 (渲染机专属), 没有才带一份模板过去
+# .env: keep existing target config (render-machine specific); copy only on first deploy
 $dstEnv = Join-Path $dst '.env'
 if (-not (Test-Path $dstEnv)) {
     Copy-Item (Join-Path $src '.env') -Destination $dstEnv -ErrorAction SilentlyContinue
-    if ($?) { Write-Host '已复制 .env (首次)' }
+    if ($?) { Write-Host 'COPIED  .env (first deploy)' }
 } else {
-    Write-Host '.env 目标已存在, 保留渲染机现有配置 (不覆盖)'
+    Write-Host 'KEPT    .env (target config preserved, not overwritten)'
 }
 
-# 校准文件: 存在才同步 (每次覆盖 — 校准重新做过就该用新的)
+# Calibration: sync latest if present
 $calib = Join-Path $src 'calib.json'
 if (Test-Path $calib) {
     Copy-Item $calib -Destination $dst -Force
-    Write-Host '已更新 calib.json'
+    Write-Host 'UPDATED  calib.json'
 } else {
-    Write-Host '源目录无 calib.json (未做过校准?), 跳过'
+    Write-Host 'SKIPPED  calib.json (not found in source)'
 }
 
 Write-Host ''
-Write-Host '同步完成. 请重启渲染服务:'
-Write-Host '  任务管理器结束 pythonw/render_service 进程, 然后运行 start_render_service.bat'
-Write-Host '  (或在 C:\autocut-render-node 下: pythonw render_service.py)'
+Write-Host 'DEPLOY DONE. Now restart the render service:'
+Write-Host '  1. Kill pythonw / render_service process in Task Manager'
+Write-Host '  2. Run start_render_service.bat (or: pythonw render_service.py in C:\autocut-render-node)'
