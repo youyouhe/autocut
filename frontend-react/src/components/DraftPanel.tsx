@@ -1,15 +1,17 @@
 import { useState, useEffect } from 'react';
-import { Clock, Calendar, Trash2, Video, RefreshCw, Loader2, Plus } from 'lucide-react';
+import { Clock, Calendar, Trash2, Video, RefreshCw, Loader2, Plus, MessageSquare, Film } from 'lucide-react';
 import * as api from '../api';
 import type { Draft } from '../api';
 
 interface Props {
   onRendered: () => void;       // 提交渲染后切到 Tasks tab
   onCreated: () => void;        // 新建草稿后切到 Chat tab
+  onOpenChat: (id: string) => void;  // 从某草稿进到它的对话列表 (setDraftId + 切 Chat tab)
+  onOpenTimeline: (id: string) => void;  // 查看该草稿的多轨道时间线 (setDraftId + 切 Timeline tab)
   setDraftId: (id: string | null) => void;
 }
 
-export default function DraftPanel({ onRendered, onCreated, setDraftId }: Props) {
+export default function DraftPanel({ onRendered, onCreated, onOpenChat, onOpenTimeline, setDraftId }: Props) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [loading, setLoading] = useState(false);
   const [rendering, setRendering] = useState<string | null>(null);
@@ -44,7 +46,9 @@ export default function DraftPanel({ onRendered, onCreated, setDraftId }: Props)
     try {
       await api.deleteDraft(folder);
       setDrafts(d => d.filter(x => x.folder !== folder));
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      alert('删除草稿失败: ' + (err as Error).message);
+    }
   };
 
   const handleRender = async (d: Draft) => {
@@ -125,7 +129,19 @@ export default function DraftPanel({ onRendered, onCreated, setDraftId }: Props)
                     <Calendar size={12} strokeWidth={1.5} /> <span>Created {formatTime(d.created)}</span>
                   </div>
                 </div>
-                <div className="mt-6 pt-4 border-t border-[#121212]/10 flex justify-end">
+                <div className="mt-6 pt-4 border-t border-[#121212]/10 flex justify-between items-center">
+                  <div className="flex gap-4">
+                    <button onClick={() => onOpenChat(d.id)}
+                      className="flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold opacity-60 hover:opacity-100 hover:text-[#121212] transition-colors"
+                      title="Open this draft's conversations">
+                      <MessageSquare size={12} strokeWidth={2} /> Chat
+                    </button>
+                    <button onClick={() => onOpenTimeline(d.id)}
+                      className="flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold opacity-60 hover:opacity-100 hover:text-[#121212] transition-colors"
+                      title="View this draft's timeline">
+                      <Film size={12} strokeWidth={2} /> Timeline
+                    </button>
+                  </div>
                   <button onClick={() => handleDelete(d.folder)}
                     className="flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold opacity-40 hover:opacity-100 hover:text-red-700 transition-colors"
                     title="Delete Draft">

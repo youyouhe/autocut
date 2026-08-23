@@ -29,7 +29,7 @@ from save_draft_impl import save_draft_impl, query_task_status, query_script_imp
 from add_effect_impl import add_effect_impl
 from add_sticker_impl import add_sticker_impl
 from create_draft import create_draft
-from delete_impl import query_draft_impl, delete_segment_impl, delete_track_impl
+from delete_impl import query_draft_impl, delete_segment_impl, delete_track_impl, delete_empty_tracks_impl
 from util import generate_draft_url as utilgenerate_draft_url, hex_to_rgb
 from pyJianYingDraft.text_segment import TextStyleRange, Text_style, Text_border
 
@@ -197,20 +197,30 @@ def add_audio():
 @app.route('/create_draft', methods=['POST'])
 def create_draft_service():
     data = request.get_json()
-    
+
     # Get parameters
     width = data.get('width', 1080)
     height = data.get('height', 1920)
-    
+    # 多租户: render_server 的 _post_internal 会把当前 user_id 透传到 payload 的 _user_id。
+    # 前端直接调用 (session 认证) 无 _user_id, 兜底从 session 取 uid, 确保草稿也带 user 前缀。
+    # 新建草稿时用它给 draft_id 加 user 前缀 (u<uid8>_), 让 DRAFT_CACHE 全局唯一 + 草稿命名空间按租户隔离。
+    user_id = data.get('_user_id')
+    if not user_id:
+        try:
+            from flask import session as _session
+            user_id = _session.get('uid')
+        except Exception:
+            user_id = None
+
     result = {
         "success": False,
         "output": "",
         "error": ""
     }
-    
+
     try:
         # Create new draft
-        script, draft_id = create_draft(width=width, height=height)
+        script, draft_id = create_draft(width=width, height=height, user_id=user_id)
         
         result["success"] = True
         result["output"] = {
@@ -780,23 +790,60 @@ def delete_segment():
 
 @app.route('/delete_track', methods=['POST'])
 def delete_track():
-    """删除一整条轨道 (含其上所有片段)。"""
+    """删除一整条轨道 (含其上所有片段)。
+
+    支持三种定位: track_id(精确, 同名消歧) / delete_all+track_name(批量同名) /
+    track_name(首个匹配, 同名>1 时返回 ambiguous)。
+    """
     data = request.get_json()
     draft_id = data.get('draft_id')
     track_name = data.get('track_name')
+    track_id = data.get('track_id')
+    delete_all = bool(data.get('delete_all'))
 
     result = {"success": False, "output": "", "error": ""}
-    if not draft_id or not track_name:
-        result["error"] = "Hi, the required parameters 'draft_id' and 'track_name' are missing."
+    if not draft_id:
+        result["error"] = "Hi, the required parameter 'draft_id' is missing."
+        return jsonify(result)
+    if not track_id and not track_name:
+        result["error"] = "Hi, 'track_name' or 'track_id' is required."
         return jsonify(result)
 
     try:
-        out = delete_track_impl(draft_id=draft_id, track_name=track_name)
+        out = delete_track_impl(
+            draft_id=draft_id, track_name=track_name,
+            track_id=track_id, delete_all=delete_all,
+        )
         result["success"] = True
         result["output"] = out
         return jsonify(result)
     except Exception as e:
         result["error"] = f"Error occurred while deleting track: {str(e)}. "
+        return jsonify(result)
+
+
+@app.route('/delete_empty_tracks', methods=['POST'])
+def delete_empty_tracks():
+    """删除所有零片段的空轨道 (可选用 track_type/track_name 过滤)。"""
+    data = request.get_json()
+    draft_id = data.get('draft_id')
+    track_type = data.get('track_type')
+    track_name = data.get('track_name')
+
+    result = {"success": False, "output": "", "error": ""}
+    if not draft_id:
+        result["error"] = "Hi, the required parameter 'draft_id' is missing."
+        return jsonify(result)
+
+    try:
+        out = delete_empty_tracks_impl(
+            draft_id=draft_id, track_type=track_type, track_name=track_name,
+        )
+        result["success"] = True
+        result["output"] = out
+        return jsonify(result)
+    except Exception as e:
+        result["error"] = f"Error occurred while deleting empty tracks: {str(e)}. "
         return jsonify(result)
 
 @app.route('/save_draft', methods=['POST'])

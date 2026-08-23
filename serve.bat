@@ -25,7 +25,9 @@ if !errorlevel!==0 (
 )
 
 echo [start] render_server background no window
-start "" /B "!PYW!" "%~dp0render_server.py"
+REM 重定向 stdout/stderr 到日志文件: pythonw 无控制台, 若仅继承 serve.bat 的控制台句柄,
+REM 本批处理退出后句柄失效, print(..., flush=True) 会抛 OSError [Errno 22] 导致 /api/video/serve 500.
+start "" /B "!PYW!" "%~dp0render_server.py" > "%~dp0server.log" 2>&1
 
 set /a tries=0
 :wait

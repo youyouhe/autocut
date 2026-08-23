@@ -19,6 +19,10 @@ SETTINGS_SCHEMA = [
     {'key': 'ASR_API_KEY', 'label': 'ASR API Key', 'secret': True, 'group': 'asr'},
     {'key': 'PREFER_ASR', 'label': '优先使用 ASR 判断视频内容 (ASR 不可用/静音时才用 VLM 看画面)',
      'secret': False, 'group': 'analysis', 'type': 'bool', 'default': '1'},
+    # FFmpeg 可执行文件路径. pythonw 后台启动不继承终端 PATH, 若 ffmpeg 不在系统 PATH 里,
+    # 所有 subprocess 调用(去音/封面/分镜/感知抽帧)都会 WinError 2. 留空 = 走 PATH 自动查找.
+    {'key': 'FFMPEG_PATH', 'label': 'FFmpeg 可执行文件路径 (留空则用系统 PATH)',
+     'secret': False, 'group': 'tools', 'default': ''},
 ]
 
 _KEYS = [s['key'] for s in SETTINGS_SCHEMA]
@@ -125,6 +129,15 @@ def _hot_patch(updates):
     if config:
         if 'ASR_ENDPOINT' in updates: config.ASR_ENDPOINT = updates.get('ASR_ENDPOINT', getattr(config, 'ASR_ENDPOINT', None))
 
+    # FFmpeg 路径改动: 刷新 render_server 的 ffmpeg 解析缓存, 让后续去音/封面/分镜等
+    # 调用立即用上新路径 (无需重启). 用 sys.modules 取已加载模块, 绝不用 `import` ——
+    # 首次请求后 Flask 已锁定路由表, 再 import 会重跑模块顶层 @app.route 装饰器并抛
+    # AssertionError "route can no longer be called".
+    if 'FFMPEG_PATH' in updates:
+        rs = sys.modules.get('render_server')
+        if rs is not None and hasattr(rs, 'resolve_ffmpeg'):
+            rs.resolve_ffmpeg(refresh=True)
+
 
 def test_llm(api_key, base_url, model):
     """真实发一次最小 chat completion, 验证 key/base_url/model 是否可用."""
@@ -139,6 +152,36 @@ def test_llm(api_key, base_url, model):
             max_tokens=1,
         )
         return {'ok': True, 'model': r.model}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)[:300]}
+
+
+def test_ffmpeg(path):
+    """验证 ffmpeg 可执行文件能跑起来 (ffmpeg -version), 顺便回填版本号.
+    path 为空时走 resolve_ffmpeg 的自动查找 (默认候选目录 / 系统 PATH)."""
+    import subprocess
+    try:
+        # 优先用用户填的路径; 留空则交给 render_server.resolve_ffmpeg 自动找
+        exe = (path or '').strip()
+        if not exe:
+            rs = sys.modules.get('render_server')
+            if rs is not None and hasattr(rs, 'resolve_ffmpeg'):
+                exe = rs.resolve_ffmpeg()
+            else:
+                from shutil import which
+                exe = which('ffmpeg') or 'ffmpeg'
+        if not exe:
+            return {'ok': False, 'error': '未找到 ffmpeg (请在系统 PATH 或默认目录 C:\\ffmpeg\\bin 中安装, 或在上方填入完整路径)'}
+        # 直接调用户填的路径; 若是目录则补 ffmpeg.exe
+        if os.path.isdir(exe):
+            exe = os.path.join(exe, 'ffmpeg.exe')
+        r = subprocess.run([exe, '-version'], capture_output=True, timeout=15)
+        if r.returncode != 0:
+            return {'ok': False, 'error': f'ffmpeg 退出码 {r.returncode}: {r.stderr.decode("utf-8","ignore")[:300]}'}
+        first_line = r.stdout.decode('utf-8', 'ignore').splitlines()[0] if r.stdout else ''
+        return {'ok': True, 'model': exe, 'status': 200, 'detail': first_line}
+    except FileNotFoundError:
+        return {'ok': False, 'error': '找不到该文件 (WinError 2): 路径不对或文件不存在'}
     except Exception as e:
         return {'ok': False, 'error': str(e)[:300]}
 

@@ -1,0 +1,42 @@
+@echo off
+chcp 65001 >nul
+REM calibrate.bat — 首跑校准 (生成 app\calib.json)
+REM 每台机器只需跑一次. 校准后会打开剪映, 按命令行提示手动点击 5 个位置.
+setlocal
+set ROOT=%~dp0
+set PY=%ROOT%python\python.exe
+set APP=%ROOT%app
+
+if not exist "%PY%" (
+  echo [错误] 找不到 %PY%
+  echo        包可能没解压完整. 请重新解压整个 zip.
+  pause
+  exit /b 1
+)
+
+set PATH=%ROOT%ffmpeg;%PATH%
+if exist "%ROOT%config.env" copy /Y "%ROOT%config.env" "%APP%\.env" >nul
+
+REM 删掉旧的 calib.json, 让本次校准结束后的存在性检查真实有效
+del /q "%APP%\calib.json" >nul 2>&1
+
+echo ================================================================
+echo  首跑校准
+echo ================================================================
+echo  接下来会打开剪映. 请确保剪映能正常启动并登录.
+echo  按命令行提示, 依次手动点击 5 个位置:
+echo    1) 导出卡片    2) 导出按钮    3) 确认导出
+echo    4) 完成关闭    5) 编辑器关闭
+echo  校准成功后会在 app\ 文件夹生成 calib.json.
+echo  这是每台机器一次性的, 以后换屏幕分辨率/换剪映版本才需要重跑.
+echo ================================================================
+echo.
+"%PY%" "%APP%\render_driver.py" calibrate
+echo.
+if exist "%APP%\calib.json" (
+  echo [成功] 已生成 %APP%\calib.json, 可以运行 start.bat 启动服务了.
+) else (
+  echo [提示] 未生成 calib.json. 校准可能未完成, 请按上面提示重试.
+)
+pause
+endlocal

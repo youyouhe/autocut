@@ -344,6 +344,7 @@ def start_jianying_in_desktop(desktop=JY_DESKTOP):
     ok = CreateProcessW(exe, None, None, None, False, 0, None, None, ctypes.byref(si), ctypes.byref(pi))
     if not ok:
         log('启动剪映失败 err=%d' % ctypes.get_last_error()); return None, hDesk
+    wd_session(True)  # 看门狗会话标记: 桌面渲染期间暂停强更拦截
     log('剪映启动在桌面 %s, PID=%d' % (desktop, pi.dwProcessId))
     return pi.dwProcessId, hDesk
 
@@ -427,6 +428,31 @@ def kill_jianying(pid=None):
         capture_output=True)
     log('已关闭剪映')
 
+# === 强更看门狗会话标记 ===
+# upgrade_watchdog 扫描前会看这个文件 (30 分钟新鲜度): 存在 = 有合法渲染/校准会话
+# 在跑, 暂停拦截. 原理: 运行中的 5.9 进程锁住自己版本目录的 exe/dll, 安装器写不进去;
+# 等会话结束标记消失, 看门狗再统一清理强更残留 (暂存目录/复位启动器/新版本目录).
+# 位置取 config.JY_APP_BASE 的上级 (机器级固定), 不跟模块所在目录走 —
+# 同机多份副本 (开发/测试解压包) 时, 任一副本落的标记所有看守实例都能看到.
+WD_MARKER = os.path.join(os.path.dirname(config.JY_APP_BASE), '.wd_session')
+
+
+def wd_session(on):
+    """落/清看门狗会话标记"""
+    try:
+        if on:
+            with open(WD_MARKER, 'w') as f:
+                f.write(str(os.getpid()))
+        elif os.path.exists(WD_MARKER):
+            os.remove(WD_MARKER)
+    except OSError:
+        pass
+
+
+import atexit as _atexit
+_atexit.register(wd_session, False)
+
+
 def start_jianying(exe_path=None):
     """启动剪映, 等主窗口就绪 (最多 60s). 返回 main pid 或 None"""
     if exe_path is None:
@@ -434,6 +460,7 @@ def start_jianying(exe_path=None):
         if not exe_path:
             log('未找到 JianyingPro.exe (检查 config.JY_APP_BASE)')
             return None
+    wd_session(True)  # 先落看门狗会话标记再拉起进程 (强更链在启动后 ~30s 就开跑)
     subprocess.Popen([exe_path], cwd=os.path.dirname(exe_path))
     log('启动剪映: %s' % exe_path)
     # 等主窗口 (有 MainWindowTitle)
@@ -445,6 +472,99 @@ def start_jianying(exe_path=None):
             return pid
     log('剪映启动超时')
     return None
+
+class GlobalClickWatcher:
+    """WH_MOUSE_LL 全局低级鼠标钩子: 记录每次物理左键按下(屏幕坐标).
+
+    校准检测专用 —— 之前校准靠 frida 钩 Qt 内部 handleMouseEvent 判断"用户点了",
+    实测会漏: 剪映首页/编辑页有内嵌 CEF 等原生表面, 点上去输入被原生管线吃掉,
+    根本不走 Qt 事件 (v4/v5 实测 16 个重载全挂也捕不到). 而 WH_MOUSE_LL 在 OS 层,
+    任何真实点击必然经过, 与目标窗口/页面/DPI 无关. 坐标记录仍优先用 frida 捕获
+    (与既有 caps 消费方空间一致), LL 只当"有点击了"的信号 + 兜底."""
+    WH_MOUSE_LL = 14
+    WM_LBUTTONDOWN = 0x0201
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.count = 0
+        self.last = None          # {'x','y','t'}
+        self._proc = None         # 回调引用防 GC
+        self._thread = None
+        self._hh = None
+
+    def start(self):
+        import ctypes
+        from ctypes import wintypes
+
+        class MSLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [('pt', wintypes.POINT), ('mouseData', wintypes.DWORD),
+                        ('flags', ctypes.wintypes.DWORD), ('time', ctypes.wintypes.DWORD),
+                        ('dwExtraInfo', ctypes.POINTER(ctypes.c_ulong))]
+
+        LRESULT = ctypes.c_longlong
+        def _cb(nCode, wp, lp):
+            try:
+                if nCode >= 0 and wp == self.WM_LBUTTONDOWN:
+                    with self.cond:
+                        self.count += 1
+                        self.last = {'x': lp.contents.pt.x, 'y': lp.contents.pt.y,
+                                     't': time.time()}
+                        self.cond.notify_all()
+            except Exception:
+                pass
+            return ctypes.windll.user32.CallNextHookEx(None, nCode, wp, lp)
+
+        # WINFUNCTYPE 签名: (int, WPARAM, POINTER(MSLLHOOKSTRUCT)) -> LRESULT
+        self._proc = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM,
+                                        ctypes.POINTER(MSLLHOOKSTRUCT))(_cb)
+
+        def _pump():
+            try:
+                self._hh = ctypes.windll.user32.SetWindowsHookExW(
+                    self.WH_MOUSE_LL, self._proc, None, 0)
+            except Exception:
+                self._hh = None
+            if not self._hh:
+                log('[llwatch] SetWindowsHookEx 失败, 校准检测退回仅frida模式')
+                return
+            # GetMessage 循环 (低级钩子需要消息泵)
+            from ctypes import wintypes as _w
+
+            class MSG(ctypes.Structure):
+                _fields_ = [('hwnd', _w.HWND), ('message', _w.UINT),
+                            ('wParam', _w.WPARAM), ('lParam', _w.LPARAM),
+                            ('time', _w.DWORD), ('pt', _w.POINT)]
+            mmsg = MSG()
+            while ctypes.windll.user32.GetMessageW(ctypes.byref(mmsg), None, 0, 0):
+                pass
+
+        self._thread = threading.Thread(target=_pump, daemon=True)
+        self._thread.start()
+        time.sleep(0.3)
+        ok = bool(self._hh)
+        log('[llwatch] started=%s' % ok)
+        return ok
+
+    def stop(self):
+        import ctypes
+        if self._hh:
+            try:
+                ctypes.windll.user32.UnhookWindowsHookEx(self._hh)
+            except Exception:
+                pass
+        if self._thread:
+            try:
+                tid = self._thread.ident
+                if tid:
+                    ctypes.windll.user32.PostThreadMessageW(tid, 0x0012, 0, 0)  # WM_QUIT
+            except Exception:
+                pass
+        self._hh = None; self._thread = None; self._proc = None
+
+    def wait_count_gt(self, base, timeout):
+        """阻塞直到 count > base 或超时. 返回 True 表示有新点击."""
+        with self.cond:
+            return self.cond.wait_for(lambda: self.count > base, timeout=timeout)
 
 class Driver:
     def __init__(self):
@@ -836,16 +956,49 @@ class Driver:
         return False
 
     def _wait_click_countdown(self, base, name, timeout=600):
-        """等一次 Press 点击 (type==2), 期间每 5s 输出倒计时日志."""
+        """等一次真实点击. 双通道: frida 捕获(type==2) 或 WH_MOUSE_LL 全局钩子.
+
+        LL 优先判定"用户点了"(OS层必达), frida 1s 宽限同步同一次按下以拿到
+        与 caps 消费方空间一致的坐标; frida 同步失败则用 LL 屏幕坐标兜底并
+        标记 src='llhook' (此时 hook 可能已失效, 渲染前建议重新校准).
+        base: frida capture_count 起始值; LL 通道的起始计数内部自记."""
         start = time.time()
         log('    开始等待点击【%s】, 最多 %ds...' % (name, timeout))
         last_log = 0.0
-        while time.time() - start < timeout:
+        gw = getattr(self, 'gwatch', None)
+        gw_base = gw.count if gw else 0
+
+        def _frida_press():
             with self.cond:
-                self.cond.wait(timeout=1.0)
                 if (self.capture_count > base and self.last_capture
                         and self.last_capture.get('type') == 2):
                     return self.last_capture
+            return None
+
+        while time.time() - start < timeout:
+            cap = _frida_press()
+            if cap is None and gw and gw.count > gw_base:
+                # LL 先看到物理按下, 给 frida 1s 宽限同步同一次事件
+                deadline = time.time() + 1.0
+                while time.time() < deadline:
+                    cap = _frida_press()
+                    if cap:
+                        break
+                    time.sleep(0.05)
+                if cap is None:
+                    pt = gw.last or {}
+                    log('    ⚠ frida 未捕获这次按下, 用全局钩子兜底坐标 '
+                        '(hook 可能失效, 完成后建议重跑校准)')
+                    cap = {'type': 2, 'src': 'llhook',
+                           'gx': pt.get('x'), 'gy': pt.get('y'),
+                           'lx': pt.get('x'), 'ly': pt.get('y'),
+                           'win': None, 'dev': 'llhook'}
+            if cap:
+                # 推进 LL 基线, 避免同一次按下被下一步重复消费
+                if gw and gw.count > gw_base:
+                    gw_base = gw.count
+                return cap
+            time.sleep(0.2)
             elapsed = time.time() - start
             if elapsed - last_log >= 5:
                 last_log = elapsed
@@ -858,6 +1011,9 @@ class Driver:
         log('    请跟随日志提示, 依次用鼠标点击剪映中的对应位置。')
         resize_jianying()  # 先固定窗口到预设尺寸, 保证校准坐标与渲染时一致
         time.sleep(2)  # 等剪映按新尺寸重新布局 (草稿卡片位置刷新)
+        # 全局鼠标钩子: 检测层 (OS层必达, 不受剪映内嵌CEF等原生表面吞输入影响)
+        self.gwatch = GlobalClickWatcher()
+        gw_ok = self.gwatch.start()
         steps = [
             ('card',         '草稿卡片', '首页里你要渲染的那个草稿 (若不在首页先点左上角返回)'),
             ('export',       '导出按钮', '进入编辑器后, 点顶部的"导出"'),
@@ -866,42 +1022,54 @@ class Driver:
             ('close_editor', '关闭编辑窗口', '关闭编辑器返回首页 (左上角返回/关闭)'),
         ]
         caps = {}
-        # 简短等一次鼠标事件做 dev 种子 (3s, 超时也继续; dev 由 hook 程序化获取)
-        self.wait_any_event(timeout=3)
-        for i, (key, name, desc) in enumerate(steps):
-            log('[%d/%d] >>> 请点击【%s】 — %s' % (i + 1, len(steps), name, desc))
-            base = self.capture_count
-            cap = self._wait_click_countdown(base, name, timeout=600)
-            if not cap:
-                log('TIMEOUT: 没捕获到 %s, 退出' % key)
-                if caps:
-                    json.dump(caps, open(CALIB_FILE, 'w', encoding='utf-8'),
-                              ensure_ascii=False, indent=2)
-                return False
-            gx, gy = cap.get('gx'), cap.get('gy')
-            if gx is None and cap.get('global'):
-                gx, gy = cap['global']['x'], cap['global']['y']
-            caps[key] = {'lx': cap.get('lx'), 'ly': cap.get('ly'),
-                         'gx': cap.get('gx'), 'gy': cap.get('gy'),
-                         'win': cap.get('win'), 'dev': cap.get('dev')}
-            json.dump(caps, open(CALIB_FILE, 'w', encoding='utf-8'),
-                      ensure_ascii=False, indent=2)
-            log('  OK 已保存 %s local(%s,%s) global(%s,%s)' %
-                (key, cap.get('lx'), cap.get('ly'), cap.get('gx'), cap.get('gy')))
-            # 等剪映界面切换完成再进入下一步
-            if key == 'card':
-                time.sleep(5)   # 点草稿后等编辑器打开
-                resize_jianying_settled()  # 编辑器常默认最大化打开(有些还会延迟自我最大化), 反复拉回固定尺寸再继续
-            elif key == 'export':
-                time.sleep(3)   # 点导出后等导出窗口弹出
-            elif key == 'confirm':
-                self.wait_render_done(timeout=600)  # 等渲染完成
-            elif key == 'close_done':
-                time.sleep(2)   # 等完成窗口关闭
-            elif key == 'close_editor':
-                time.sleep(2)   # 等回到首页
-        log('CALIB DONE -> %s' % CALIB_FILE)
-        return True
+        try:
+            # 简短等一次鼠标事件做 dev 种子 (3s, 超时也继续; dev 由 hook 程序化获取)
+            self.wait_any_event(timeout=3)
+            for i, (key, name, desc) in enumerate(steps):
+                log('[%d/%d] >>> 请点击【%s】 — %s' % (i + 1, len(steps), name, desc))
+                base = self.capture_count
+                cap = self._wait_click_countdown(base, name, timeout=600)
+                if not cap:
+                    log('TIMEOUT: 没捕获到 %s, 退出' % key)
+                    if caps:
+                        json.dump(caps, open(CALIB_FILE, 'w', encoding='utf-8'),
+                                  ensure_ascii=False, indent=2)
+                    return False
+                gx, gy = cap.get('gx'), cap.get('gy')
+                if gx is None and cap.get('global'):
+                    gx, gy = cap['global']['x'], cap['global']['y']
+                caps[key] = {'lx': cap.get('lx'), 'ly': cap.get('ly'),
+                             'gx': cap.get('gx'), 'gy': cap.get('gy'),
+                             'win': cap.get('win'), 'dev': cap.get('dev'),
+                             'src': cap.get('src', 'frida')}
+                json.dump(caps, open(CALIB_FILE, 'w', encoding='utf-8'),
+                          ensure_ascii=False, indent=2)
+                log('  OK 已保存 %s local(%s,%s) global(%s,%s) src=%s' %
+                    (key, cap.get('lx'), cap.get('ly'), cap.get('gx'), cap.get('gy'),
+                     cap.get('src', 'frida')))
+                # 等剪映界面切换完成再进入下一步
+                if key == 'card':
+                    time.sleep(5)   # 点草稿后等编辑器打开
+                    resize_jianying_settled()  # 编辑器常默认最大化打开(有些还会延迟自我最大化), 反复拉回固定尺寸再继续
+                elif key == 'export':
+                    time.sleep(3)   # 点导出后等导出窗口弹出
+                elif key == 'confirm':
+                    self.wait_render_done(timeout=600)  # 等渲染完成
+                elif key == 'close_done':
+                    time.sleep(2)   # 等完成窗口关闭
+                elif key == 'close_editor':
+                    time.sleep(2)   # 等回到首页
+            ll_used = [k for k, v in caps.items() if v.get('src') == 'llhook']
+            if ll_used:
+                log('⚠ 有 %d 步 frida 未捕获(仅全局钩子兜底): %s — 渲染可能受影响, 建议重跑校准'
+                    % (len(ll_used), ','.join(ll_used)))
+            log('CALIB DONE -> %s' % CALIB_FILE)
+            return True
+        finally:
+            try:
+                self.gwatch.stop()
+            except Exception:
+                pass
 
     def run(self, count=1):
         log('=== 自动运行: 渲染 %d 次 (focusWindow + 程序化 dev) ===' % count)
@@ -1083,7 +1251,22 @@ def main():
     if mode == 'kill':
         kill_jianying(); sys.exit(0)
     if mode == 'start':
-        pid = start_jianying(); sys.exit(0 if pid else 1)
+        # 供 open_jianying.bat 用: 前台启动 + 会话标记保活.
+        # 之前启动完就退出, atexit 把 .wd_session 也清了 -> 用户手动登录的剪映
+        # 会在强更安装器下载完成后被看门狗关掉. 现在本进程陪跑到用户关闭剪映.
+        pid = start_jianying()
+        if not pid:
+            sys.exit(1)
+        log('剪映运行中 - 保持升级防护会话标记, 关闭剪映后本进程自动退出')
+        try:
+            while find_main_pid():
+                wd_session(True)  # 持续刷新, 防 30min TTL 过期
+                time.sleep(5)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            wd_session(False)
+        sys.exit(0)
 
     # 桌面模式: 在独立桌面启动剪映 (真后台, 主桌面不打扰)
     attach_pid = None
@@ -1108,6 +1291,13 @@ def main():
             time.sleep(30)
         else:
             log('桌面模式 attach 预启动剪映 PID=%d' % attach_pid)
+    elif attach_pid is None and find_main_pid() is None:
+        # 前台模式 (如 calibrate.bat): 剪映没在运行时自己启动.
+        # 之前 calibrate 直接报 "没找到剪映主进程" —— 它假定剪映已开,
+        # 实际双击 bat 时剪映往往没开 (尤其 fix_update.bat 跑完会把剪映杀掉).
+        log('剪映未运行, 自动启动...')
+        if not start_jianying():
+            log('启动剪映失败, 中止'); sys.exit(1)
 
     d = Driver()
     try:

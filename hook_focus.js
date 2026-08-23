@@ -171,9 +171,13 @@ function qiFindButtonByText(win, wantTexts, maxDepth, maxNodes) {
 var hmTarget = null;
 Process.getModuleByName('Qt6Gui.dll').enumerateExports().forEach(function (e) {
     var n = e.name || '';
+    // 注意: 必须匹配带 K(ulong ts 时间戳参数) 的 10 参重载 '@@KPEBVQPointingDevice@@'.
+    // 不带 K 的 9 参重载里 a[7]=mods(不是 type), 按 a[7]==2 判 Press 永远不成立,
+    // 表现就是"真实点击检测不到"(校准卡死在等待点击). 实测 5.9 两个重载都会被真实输入触发,
+    // 但只有 ts 版的参数布局和下面 fnHandleMouse 的 10 参签名一致.
     if (n.indexOf('handleMouseEvent@') >= 0
         && n.indexOf('UDefaultDelivery@') >= 0
-        && n.indexOf('@@PEBVQPointingDevice@@') >= 0) {
+        && n.indexOf('@@KPEBVQPointingDevice@@') >= 0) {
         hmTarget = e.address;
     }
 });

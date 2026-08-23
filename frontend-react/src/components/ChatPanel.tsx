@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, SquareTerminal, Plus, Trash2, Loader2, MessageSquare } from 'lucide-react';
+import { Send, Bot, User, SquareTerminal, Plus, Trash2, Loader2, MessageSquare, ChevronDown, FileEdit } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import * as api from '../api';
-import type { Asset, ChatChunk, ChatMessage, ConversationSummary } from '../api';
+import type { Asset, ChatChunk, ChatMessage, ConversationSummary, Draft } from '../api';
 
 type Message = ChatMessage;
 
@@ -23,6 +23,9 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
   const [isTyping, setIsTyping] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loadingConv, setLoadingConv] = useState(false);
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [draftMenuOpen, setDraftMenuOpen] = useState(false);
+  const [creatingDraft, setCreatingDraft] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   // 内层内容盒: ResizeObserver 的观察对象. 容器自身尺寸不变(它是视口), 内容盒的高度
   // 才随消息/媒体增长 —— 视频预览晚拿到 metadata、markdown/代码块晚排版、新消息插入,
@@ -81,9 +84,30 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
     if (stickToBottom.current) scrollToBottom(false);
   }, [messages.length, lastLen, isTyping, loadingConv]);
 
-  const fetchConversations = async () => {
-    try { setConversations(await api.listConversations()); }
+  const fetchConversations = async (dId?: string | null) => {
+    const target = dId ?? draftId;
+    if (!target) { setConversations([]); return; }
+    try { setConversations(await api.listConversations(target)); }
     catch (err) { console.error(err); }
+  };
+
+  const fetchDrafts = async () => {
+    try { setDrafts(await api.listDrafts()); }
+    catch (err) { console.error(err); }
+  };
+
+  // 选一个草稿作为当前草稿上下文: 刷新侧栏对话列表 + 自动加载最近一条对话
+  const selectDraft = async (dId: string | null) => {
+    setDraftId(dId);
+    setDraftMenuOpen(false);
+    setConversationId(null);
+    setMessages([GREETING]);
+    if (!dId) { setConversations([]); return; }
+    const list = await api.listConversations(dId).catch(() => []);
+    setConversations(list);
+    if (list.length > 0) {
+      await loadConversation(list[0].id);
+    }
   };
 
   const loadConversation = async (id: string) => {
@@ -95,27 +119,52 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
       stickToBottom.current = true;
       lastScrollTop.current = 0;
       setMessages(conv.messages.length ? conv.messages : [GREETING]);
-      setDraftId(conv.draft_id ?? null);
+      // 新模型下侧栏只列当前草稿的对话, conv.draft_id === draftId, 此行仅作兜底
+      if (conv.draft_id && conv.draft_id !== draftId) setDraftId(conv.draft_id);
     } catch (err) {
       console.error(err);
     } finally { setLoadingConv(false); }
   };
 
-  // 首次挂载: 拉历史列表; 若当前没有激活的会话(比如刚刷新页面), 自动恢复最近一条
+  // 首次挂载: 确定当前草稿上下文, 再拉它的对话列表.
+  // 有 draftId → 直接用; 无 → 自动选最近一个草稿; 都没有 → 空状态 (点 New Chat 会自动建草稿).
   useEffect(() => {
     if (didInit.current) return;
     didInit.current = true;
     (async () => {
-      const list = await api.listConversations().catch(() => []);
-      setConversations(list);
-      if (!conversationId && list.length > 0) {
-        await loadConversation(list[0].id);
+      await fetchDrafts();
+      if (draftId) {
+        await selectDraft(draftId);
+      } else {
+        const list = await api.listDrafts().catch(() => []);
+        if (list.length > 0) {
+          await selectDraft(list[0].id);
+        }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleNewChat = () => {
+  const handleNewChat = async () => {
+    // 每个对话必须关联一个草稿. 当前无草稿时自动建一个空草稿再绑定.
+    let dId = draftId;
+    if (!dId) {
+      setCreatingDraft(true);
+      try {
+        const r = await api.createDraft();
+        if (r.success && r.output?.draft_id) {
+          dId = r.output.draft_id;
+          setDraftId(dId);
+          await fetchDrafts();
+        } else {
+          alert('新建草稿失败: ' + (r.error || '未知错误'));
+          return;
+        }
+      } catch (err) {
+        alert('新建草稿失败: ' + (err as Error).message);
+        return;
+      } finally { setCreatingDraft(false); }
+    }
     setConversationId(null);
     setMessages([GREETING]);
   };
@@ -138,6 +187,24 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
   const handleSend = async () => {
     const userMsg = input.trim();
     if (!userMsg || isTyping) return;
+    // 每个对话必须关联草稿; 没有就先建一个 (用户直接在空状态发消息的情况)
+    let activeDraft = draftId;
+    if (!activeDraft) {
+      try {
+        const r = await api.createDraft();
+        if (r.success && r.output?.draft_id) {
+          activeDraft = r.output.draft_id;
+          setDraftId(activeDraft);
+          await fetchDrafts();
+        } else {
+          alert('需要先有草稿才能对话, 但新建草稿失败: ' + (r.error || '未知错误'));
+          return;
+        }
+      } catch (err) {
+        alert('新建草稿失败: ' + (err as Error).message);
+        return;
+      }
+    }
     setInput('');
     // 自己刚发出消息: 无条件跟随到底部 (即使之前上翻在看历史)
     stickToBottom.current = true;
@@ -150,7 +217,7 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
 
     try {
       await api.chatStream(
-        { message: userMsg, draft_id: draftId, asset_paths: assetPaths, conversation_id: conversationId },
+        { message: userMsg, draft_id: activeDraft, asset_paths: assetPaths, conversation_id: conversationId },
         (c: ChatChunk) => {
           if (c.conversation_id && c.conversation_id !== conversationId) {
             setConversationId(c.conversation_id);
@@ -167,8 +234,11 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
               { role: 'tool', content: `Invoked: ${c.tool}`, toolDetails: { tool: c.tool!, args: c.args, result: c.result } },
               { role: 'assistant', content: assistantContent },
             ]);
-          } else if (c.draft_id) {
-            setDraftId(c.draft_id);
+          } else if (c.draft_id && c.draft_id !== activeDraft) {
+            // agent 新建/切换了草稿: 对话从此归属新草稿, 同步上下文并刷新草稿列表+侧栏
+            activeDraft = c.draft_id;
+            setDraftId(activeDraft);
+            fetchDrafts();
           }
         },
       );
@@ -180,7 +250,7 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
       setIsTyping(false);
       // 对话可能产生草稿/素材变化, 刷新
       refreshAssets();
-      fetchConversations();
+      fetchConversations(activeDraft);
     }
   };
 
@@ -222,15 +292,57 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
     <div className="h-full w-full flex bg-transparent">
       {/* 历史会话侧栏 */}
       <div className="w-64 border-r border-[#121212]/10 flex flex-col flex-shrink-0">
-        <div className="p-6 border-b border-[#121212]/10">
-          <button onClick={handleNewChat}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 border border-[#121212] bg-[#121212] hover:bg-transparent text-[#FDFCF8] hover:text-[#121212] transition-colors text-[10px] uppercase tracking-widest font-bold">
-            <Plus size={14} strokeWidth={2} /> New Chat
+        {/* 草稿切换器: 侧栏只列当前草稿的对话, 换草稿换一组 */}
+        <div className="p-4 border-b border-[#121212]/10 relative">
+          <div className="text-[9px] uppercase tracking-[0.3em] opacity-40 mb-2">Draft Context</div>
+          <button onClick={() => setDraftMenuOpen(o => !o)}
+            className="w-full flex items-center justify-between gap-2 px-3 py-2.5 border border-[#121212]/20 hover:border-[#121212] transition-colors text-left">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileEdit size={13} strokeWidth={1.5} className="opacity-60 flex-shrink-0" />
+              <span className="text-xs font-mono truncate">
+                {draftId ? draftId.slice(0, 8) + '…' : '— none —'}
+              </span>
+            </div>
+            <ChevronDown size={13} strokeWidth={1.5} className="opacity-40 flex-shrink-0" />
+          </button>
+          {draftMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-20" onClick={() => setDraftMenuOpen(false)} />
+              <div className="absolute left-4 right-4 top-full mt-1 border border-[#121212]/20 bg-[#FDFCF8] z-30 max-h-72 overflow-y-auto shadow-lg">
+                {drafts.length === 0 ? (
+                  <div className="p-4 text-[10px] uppercase tracking-widest opacity-40 text-center">No drafts</div>
+                ) : drafts.map(d => (
+                  <div key={d.id} onClick={() => selectDraft(d.id)}
+                    className={`px-3 py-2.5 cursor-pointer border-b border-[#121212]/5 last:border-0 flex items-center gap-2 hover:bg-[#121212]/5 transition-colors ${
+                      d.id === draftId ? 'bg-[#121212]/5' : ''
+                    }`}>
+                    <FileEdit size={12} strokeWidth={1.5} className="opacity-50 flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-light truncate">{d.name || d.id.slice(0, 8)}</div>
+                      <div className="text-[9px] uppercase tracking-widest opacity-40 font-mono">{d.id.slice(0, 12)}…</div>
+                    </div>
+                  </div>
+                ))}
+                <button onClick={() => { setDraftMenuOpen(false); handleNewChat(); }}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 border-t border-[#121212]/10 bg-[#121212] hover:bg-[#121212]/80 text-[#FDFCF8] transition-colors text-[10px] uppercase tracking-widest font-bold">
+                  <Plus size={12} strokeWidth={2} /> New Draft + Chat
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="p-4 border-b border-[#121212]/10">
+          <button onClick={handleNewChat} disabled={creatingDraft}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 border border-[#121212] bg-[#121212] hover:bg-transparent text-[#FDFCF8] hover:text-[#121212] transition-colors text-[10px] uppercase tracking-widest font-bold disabled:opacity-50">
+            {creatingDraft ? <Loader2 size={14} strokeWidth={2} className="animate-spin" /> : <Plus size={14} strokeWidth={2} />}
+            New Chat
           </button>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {conversations.length === 0 ? (
-            <div className="p-6 text-[10px] uppercase tracking-widest opacity-40 text-center">No history yet</div>
+          {!draftId ? (
+            <div className="p-6 text-[10px] uppercase tracking-widest opacity-40 text-center">Select a draft above</div>
+          ) : conversations.length === 0 ? (
+            <div className="p-6 text-[10px] uppercase tracking-widest opacity-40 text-center">No chats in this draft</div>
           ) : (
             conversations.map(c => (
               <div key={c.id} onClick={() => handleSelectConversation(c.id)}

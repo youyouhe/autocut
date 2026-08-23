@@ -284,21 +284,106 @@ def delete_segment_impl(
 
 def delete_track_impl(
     draft_id: str,
-    track_name: str,
+    track_name: Optional[str] = None,
+    track_id: Optional[str] = None,
+    delete_all: bool = False,
 ) -> Dict[str, Any]:
     """删除一整条轨道 (含其上所有片段)。
 
-    同时支持普通轨道和导入轨道。删除后清理孤儿素材 + 重算时长。
+    定位方式 (按优先级):
+      1. track_id: 精确匹配 (同名轨道消歧, 从 get_draft_timeline 拿 track_id)
+      2. delete_all=True + track_name: 删掉所有同名轨道 (批量)
+      3. track_name (兼容旧用法): 删第一个匹配项; 同名 >1 时返回 ambiguous=True
+
+    删除后清理孤儿素材 + 重算时长。
     """
     script = _get_script(draft_id)
-    if not track_name:
-        raise ValueError("track_name 不能为空")
+    if not track_id and not track_name:
+        raise ValueError("track_name 或 track_id 至少提供一个")
 
+    # --- 1. 按 track_id 精确删除 (dict + list 都查) ---
+    if track_id:
+        removed = None
+        is_imported = False
+        # dict 轨道
+        for nm, tr in list(script.tracks.items()):
+            if getattr(tr, "track_id", None) == track_id:
+                removed = script.tracks.pop(nm)
+                is_imported = False
+                break
+        if removed is None:
+            imported = getattr(script, "imported_tracks", []) or []
+            idx = next((i for i, tr in enumerate(imported)
+                        if getattr(tr, "track_id", None) == track_id), None)
+            if idx is not None:
+                removed = imported.pop(idx)
+                is_imported = True
+        if removed is None:
+            raise KeyError(f"不存在 track_id='{track_id}' 的轨道")
+
+        logger.info(f"已删除轨道(by id): draft={draft_id} track_id='{track_id}' "
+                    f"name='{removed.name}' imported={is_imported}")
+        orphan_stats = _cleanup_orphan_materials(script)
+        _recompute_duration(script)
+        return {
+            "draft_id": draft_id,
+            "deleted_track": {
+                "track_name": removed.name,
+                "track_type": removed.track_type.name,
+                "track_id": getattr(removed, "track_id", None),
+                "segment_count": len(removed.segments),
+                "is_imported": is_imported,
+            },
+            "orphan_materials_removed": orphan_stats,
+            "duration_sec": round(script.duration / SEC, 3),
+        }
+
+    # --- 2/3. 按 track_name ---
+    # 先统计同名候选数 (dict + list 合计)
+    dict_matches = [nm for nm, tr in script.tracks.items() if tr.name == track_name]
+    list_matches = [tr for tr in (getattr(script, "imported_tracks", []) or []) if tr.name == track_name]
+    total_matches = len(dict_matches) + len(list_matches)
+    if total_matches == 0:
+        raise KeyError(f"不存在名为 '{track_name}' 的轨道")
+
+    if delete_all:
+        # 批量删所有同名
+        deleted: List[Dict[str, Any]] = []
+        for nm in dict_matches:
+            tr = script.tracks.pop(nm)
+            deleted.append({
+                "track_name": tr.name, "track_type": tr.track_type.name,
+                "track_id": getattr(tr, "track_id", None),
+                "segment_count": len(tr.segments), "is_imported": False,
+            })
+        imported = getattr(script, "imported_tracks", []) or []
+        for tr in list_matches:
+            idx = next((i for i, t in enumerate(imported) if t is tr), None)
+            if idx is not None:
+                imported.pop(idx)
+                deleted.append({
+                    "track_name": tr.name, "track_type": tr.track_type.name,
+                    "track_id": getattr(tr, "track_id", None),
+                    "segment_count": len(tr.segments), "is_imported": True,
+                })
+        logger.info(f"已删除同名轨道(all): draft={draft_id} name='{track_name}' "
+                    f"count={len(deleted)}")
+        orphan_stats = _cleanup_orphan_materials(script)
+        _recompute_duration(script)
+        return {
+            "draft_id": draft_id,
+            "deleted_tracks": deleted,
+            "deleted_count": len(deleted),
+            "ambiguous": total_matches > 1,
+            "orphan_materials_removed": orphan_stats,
+            "duration_sec": round(script.duration / SEC, 3),
+        }
+
+    # --- 3. 兼容旧用法: 删第一个匹配, 同名>1 标 ambiguous ---
     removed_track = None
     is_imported = False
-
-    if track_name in script.tracks:
-        removed_track = script.tracks.pop(track_name)
+    if dict_matches:
+        removed_track = script.tracks.pop(dict_matches[0])
         is_imported = False
     else:
         imported = getattr(script, "imported_tracks", []) or []
@@ -307,24 +392,94 @@ def delete_track_impl(
                 removed_track = imported.pop(i)
                 is_imported = True
                 break
-        if removed_track is None:
-            raise KeyError(f"不存在名为 '{track_name}' 的轨道")
 
     logger.info(f"已删除轨道: draft={draft_id} track='{track_name}' "
-                f"segments={len(removed_track.segments)} imported={is_imported}")
+                f"segments={len(removed_track.segments)} imported={is_imported} "
+                f"ambiguous={total_matches > 1}")
 
-    # 清理 + 重算
     orphan_stats = _cleanup_orphan_materials(script)
     _recompute_duration(script)
-
     return {
         "draft_id": draft_id,
         "deleted_track": {
             "track_name": track_name,
             "track_type": removed_track.track_type.name,
+            "track_id": getattr(removed_track, "track_id", None),
             "segment_count": len(removed_track.segments),
             "is_imported": is_imported,
         },
+        "ambiguous": total_matches > 1,
+        "orphan_materials_removed": orphan_stats,
+        "duration_sec": round(script.duration / SEC, 3),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 删除所有空轨道
+# ---------------------------------------------------------------------------
+
+def delete_empty_tracks_impl(
+    draft_id: str,
+    track_type: Optional[str] = None,
+    track_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """删除所有零片段的空轨道。
+
+    可选过滤 track_type (如 'video') / track_name 进一步缩小范围。
+    删除按对象身份操作 (不按名字), 因此同名空轨也能逐条精确删除, 不会误删另一条
+    或因 pop 下标错位。删除后清理孤儿素材 + 重算时长 (复用现有 helper)。
+
+    返回 deleted_tracks 列表, 每条带 track_id (与 get_draft_timeline 暴露的 id 对应)。
+    """
+    script = _get_script(draft_id)
+
+    # 候选: 普通轨道(dict) + 导入轨道(list), 标注来源
+    candidates: List[Tuple[Any, bool]] = []  # [(track_obj, is_imported)]
+    for tr in script.tracks.values():
+        candidates.append((tr, False))
+    for tr in getattr(script, "imported_tracks", []) or []:
+        candidates.append((tr, True))
+
+    def _matches(track) -> bool:
+        if len(track.segments) != 0:
+            return False
+        if track_type is not None and track.track_type.name != track_type:
+            return False
+        if track_name is not None and track.name != track_name:
+            return False
+        return True
+
+    to_delete = [(tr, imp) for tr, imp in candidates if _matches(tr)]
+
+    deleted: List[Dict[str, Any]] = []
+    # 按身份删除, 避免 pop 时下标错位 / 同名误删
+    for track, is_imported in to_delete:
+        if is_imported:
+            imported = getattr(script, "imported_tracks", []) or []
+            idx = next((i for i, tr in enumerate(imported) if tr is track), None)
+            if idx is None:
+                continue  # 理论不会发生
+            imported.pop(idx)
+        else:
+            # dict 轨道按名字 pop (dict 轨道名字唯一)
+            script.tracks.pop(track.name, None)
+        deleted.append({
+            "track_name": track.name,
+            "track_type": track.track_type.name,
+            "track_id": getattr(track, "track_id", None),
+            "is_imported": is_imported,
+        })
+
+    logger.info(f"已删除空轨道: draft={draft_id} count={len(deleted)} "
+                f"names={[d['track_name'] for d in deleted]}")
+
+    orphan_stats = _cleanup_orphan_materials(script)
+    _recompute_duration(script)
+
+    return {
+        "draft_id": draft_id,
+        "deleted_tracks": deleted,
+        "deleted_count": len(deleted),
         "orphan_materials_removed": orphan_stats,
         "duration_sec": round(script.duration / SEC, 3),
     }

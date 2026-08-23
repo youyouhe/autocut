@@ -1,0 +1,125 @@
+@echo off
+chcp 65001 >nul
+REM fix_update.bat — 禁止剪映自动升级 (锁定版本, 防止草稿格式变化导致不匹配)
+REM
+REM 原理 (2026-08 实测):
+REM   1. 只把 版本目录\update.exe 改名远远不够 —— 每个版本目录里的 JianyingPro.exe
+REM      本身也带完整升级逻辑, 且服务端对老版本强制下发升级包,
+REM      客户端把自己的版本号改成再高也没用.
+REM   2. 升级的落地动作全部发生在 Apps 根目录: 创建时间戳暂存目录,
+REM      写入新版本号文件夹, 复位根目录的启动器 JianyingPro.exe.
+REM   3. 所以真正的锁 = 给 Apps 根目录加 "拒绝创建文件/子目录" ACL.
+REM      只限本层不继承, 子目录内读写完全不受影响;
+REM      也不碰 User Data\Download (素材缓存目录, 不能动).
+REM
+REM 何时跑: 装完剪映并手动打开过一次之后、校准之前跑一次. 以后不用再跑.
+REM 解锁: 以后确实要手动升级剪映时, 先执行下面这行解除锁定,
+REM         icacls "%LocalAppData%\JianyingPro\Apps" /remove:d Everyone
+REM       升级完成后重跑本脚本即可重新上锁.
+setlocal enabledelayedexpansion
+
+set APPS_BASE=%LocalAppData%\JianyingPro\Apps
+
+echo ================================================================
+echo  禁止剪映自动升级
+echo ================================================================
+echo  草稿格式与校准坐标都绑定剪映版本, 升级会导致不匹配.
+echo  本脚本做三件事: 禁用更新器, 隔离复位启动器, 锁定 Apps 目录.
+echo ================================================================
+echo.
+
+REM 先关掉运行中的剪映 (文件被占用时改不了名)
+echo [1/4] 关闭运行中的剪映进程 ...
+tasklist /FI "IMAGENAME eq JianyingPro.exe" 2>nul | findstr /I "JianyingPro" >nul
+if not errorlevel 1 (
+  taskkill /F /IM JianyingPro.exe >nul 2>&1
+  echo       已关闭 JianyingPro.exe
+  REM 等一下让进程彻底退出
+  timeout /t 2 /nobreak >nul
+) else (
+  echo       剪映未在运行, 跳过.
+)
+echo.
+
+if not exist "%APPS_BASE%" (
+  echo   [错误] 找不到剪映安装目录: %APPS_BASE%
+  echo          请先按第 2 步装好剪映, 再跑本脚本.
+  goto :report
+)
+
+REM 遍历 Apps\<版本号>\ 找 update.exe
+echo [2/4] 查找并禁用各版本目录下的更新器 ...
+set FOUND=0
+for /D %%V in ("%APPS_BASE%\*") do (
+  if exist "%%V\update.exe" (
+    REM 已有 .bak 说明之前禁过, 先清掉旧的再改新的 (避免覆盖升级后残留)
+    if exist "%%V\update.exe.bak" del /F /Q "%%V\update.exe.bak" >nul 2>&1
+    ren "%%V\update.exe" "update.exe.bak"
+    if exist "%%V\update.exe.bak" (
+      echo       [%%~nxV] update.exe -^> update.exe.bak  已禁用
+      set FOUND=1
+    ) else (
+      echo       [%%~nxV] 改名失败 - 可能被占用, 请确认剪映已完全退出
+    )
+  ) else if exist "%%V\update.exe.bak" (
+    echo       [%%~nxV] 已是禁用状态, update.exe.bak 已存在, 跳过.
+    set FOUND=1
+  )
+)
+echo.
+
+REM 服务端强更会把启动器复位回 Apps 根目录, 一并隔离
+echo [3/4] 隔离 Apps 根目录的启动器 JianyingPro.exe ...
+if exist "%APPS_BASE%\JianyingPro.exe" (
+  if exist "%APPS_BASE%\JianyingPro.exe.bak" del /F /Q "%APPS_BASE%\JianyingPro.exe.bak" >nul 2>&1
+  ren "%APPS_BASE%\JianyingPro.exe" "JianyingPro.exe.bak"
+  if exist "%APPS_BASE%\JianyingPro.exe.bak" (
+    echo       JianyingPro.exe -^> JianyingPro.exe.bak  已隔离
+    set FOUND=1
+  ) else (
+    echo       改名失败 - 可能被占用, 请确认剪映已完全退出
+  )
+) else (
+  echo       根目录没有启动器, 跳过.
+)
+echo.
+
+echo [4/4] 锁定 Apps 目录 - 拒绝在本层创建文件和子目录 ...
+REM 必须用 PowerShell 上裸掩码 deny - icacls 会多锁一个 SYNCHRONIZE 位,
+REM 那会连目录枚举都锁死, 后续脚本和服务找不到剪映
+powershell -NoProfile -Command "$p='%APPS_BASE%';$a=Get-Acl $p;$r=New-Object System.Security.AccessControl.FileSystemAccessRule('Everyone',[System.Security.AccessControl.FileSystemRights]6,'None','None','Deny');$a.AddAccessRule($r);Set-Acl $p $a" >nul 2>&1
+REM 验证是否真的锁上了: 能建出临时文件就是没锁住
+copy /y nul "%APPS_BASE%\__locktest.tmp" >nul 2>&1
+if exist "%APPS_BASE%\__locktest.tmp" (
+  del /F /Q "%APPS_BASE%\__locktest.tmp" >nul 2>&1
+  echo   [警告] 上锁失败 - 请右键本脚本选 以管理员身份运行 再试一次.
+) else (
+  echo       已上锁 - 仅 Apps 本层生效, 子目录与素材目录不受影响.
+  set FOUND=1
+)
+REM 锁上后确认枚举没被误伤 (服务要能列出版本目录)
+dir /b "%APPS_BASE%" >nul 2>&1
+if errorlevel 1 (
+  echo   [警告] 目录枚举被锁死, 正在解除本次上锁 ...
+  powershell -NoProfile -Command "$p='%APPS_BASE%';$a=Get-Acl $p;$i=$a.Access.Count-1;while($i -ge 0){$r=$a.Access[$i];if($r.AccessControlType -eq 'Deny'){$a.RemoveAccessRuleSpecific($r)|Out-Null};$i--};Set-Acl $p $a" >nul 2>&1
+  echo   [警告] 已解除. 本机环境不适合此锁, 前三步的防护仍然有效.
+)
+echo.
+
+:report
+echo [结果]
+if "%FOUND%"=="1" (
+  echo.
+  echo   ================================================================
+  echo    已禁止剪映自动升级, 当前版本锁定.
+  echo    可以继续: 双击 calibrate.bat 进行首跑校准.
+  echo   ================================================================
+) else (
+  echo.
+  echo   [提示] 没有找到可禁用的更新器, 也没上锁.
+  echo          可能剪映还没装, 或安装目录不是默认位置.
+  echo          若剪映已能正常使用, 可直接继续 calibrate.bat.
+)
+echo.
+pause
+endlocal

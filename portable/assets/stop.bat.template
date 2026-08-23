@@ -1,0 +1,16 @@
+@echo off
+chcp 65001 >nul
+REM stop.bat — 停止 render_service (按端口 9020 找进程并杀掉)
+setlocal
+set FOUND=0
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":9020" ^| findstr "LISTENING"') do (
+  echo [停止] 杀掉 PID %%a, 端口 9020
+  taskkill /PID %%a /F >nul 2>&1
+  set FOUND=1
+)
+if "%FOUND%"=="0" (
+  echo [提示] 端口 9020 上没有监听的 render_service - 可能本就没启动, 或已停止.
+) else (
+  echo render_service 已停止.
+)
+endlocal

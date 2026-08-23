@@ -1,0 +1,39 @@
+@echo off
+chcp 65001 >nul
+REM start.bat — 启动 render_service (免安装渲染节点)
+REM 双击运行即可. 用包内自带的 python, 不依赖系统装 Python.
+setlocal
+set ROOT=%~dp0
+set PY=%ROOT%python\python.exe
+set APP=%ROOT%app
+
+if not exist "%PY%" (
+  echo [错误] 找不到 %PY%
+  echo        包可能没解压完整, 或解压路径被截断. 请重新解压整个 zip.
+  pause
+  exit /b 1
+)
+
+REM ffmpeg 前插 PATH (render_driver 调裸 ffprobe 命令)
+set PATH=%ROOT%ffmpeg;%PATH%
+
+REM 把根 config.env 拷成 app\.env (config.py 启动时自动加载同目录 .env)
+if exist "%ROOT%config.env" (
+  copy /Y "%ROOT%config.env" "%APP%\.env" >nul
+) else (
+  echo [警告] 根目录没有 config.env, 将使用 config.py 内置默认值.
+  echo        建议先按 start_here.html 第 3 步配置 config.env.
+)
+
+REM 启动 render_service. 用 python.exe 前台运行 (可见日志, 方便首跑排错).
+REM 想后台无窗口运行, 把下一行 python.exe 改成 pythonw.exe 即可.
+echo [启动] render_service (端口 9020) ...
+echo        日志会显示在这个窗口, 关闭窗口即停止服务.
+echo        停止也可双击 stop.bat
+echo.
+start "render_service" /D "%APP%" "%PY%" render_service.py
+echo.
+echo render_service 已启动.
+echo 健康检查: http://127.0.0.1:9020/health
+echo 局域网地址: http://本机IP:9020/health  (IP 见 start_here.html 第 6 步)
+endlocal

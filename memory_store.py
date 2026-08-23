@@ -24,40 +24,43 @@ def _path_hash(path):
 
 # ============================================================ 分析元数据 (SQLite)
 
-def load_all_analysis():
-    """启动时返回已入库的分析记录数 (数据在 SQLite, 无需全量载内存)。"""
-    return asset_store.count()
+def load_all_analysis(owner=None):
+    """启动时返回已入库的分析记录数 (数据在 SQLite, 无需全量载内存)。
+    owner 给定时: 计 owner 匹配 (或 legacy NULL) 的记录。"""
+    return asset_store.count(owner=owner)
 
 
-def get_analysis(path):
-    """按路径查分析结果 (SQLite 主键查询)。"""
-    return asset_store.get(path)
+def get_analysis(path, owner=None):
+    """按路径查分析结果 (SQLite 主键查询)。
+    owner 给定时: 仅返回 owner 匹配 (或 legacy NULL) 的记录 (租户隔离)。"""
+    return asset_store.get(path, owner=owner)
 
 
-def has_analysis(path):
-    return asset_store.has(path)
+def has_analysis(path, owner=None):
+    return asset_store.has(path, owner=owner)
 
 
-def save_analysis(path, result):
-    """写入 SQLite (asset_store.upsert)。"""
-    asset_store.upsert(path, result)
+def save_analysis(path, result, owner=None):
+    """写入 SQLite (asset_store.upsert)。owner 给定时写入归属。"""
+    asset_store.upsert(path, result, owner=owner)
 
 
-def invalidate_analysis(path):
+def invalidate_analysis(path, owner=None):
     """文件内容变了 (如去除音轨) 时清掉旧分析记录, 否则库里的老结果
     (可能包含已经不存在的音轨对应的 ASR 转录) 会被继续当作最新结果返回。"""
     global _video_ram_used
-    asset_store.delete(path)
+    asset_store.delete(path, owner=owner)
     with _lock:
         old = _video_store.pop(path, None)
         if old:
             _video_ram_used -= old['size']
 
 
-def list_all_analysis():
-    """返回所有已入库的分析元数据摘要 (兼容旧字段)。"""
+def list_all_analysis(owner=None):
+    """返回所有已入库的分析元数据摘要 (兼容旧字段)。
+    owner 给定时: 仅返回 owner 匹配 (或 legacy NULL) 的记录。"""
     out = []
-    for a in asset_store.list_all():
+    for a in asset_store.list_all(owner=owner):
         out.append({
             'hash': _path_hash(a['path']),
             'path': a['path'],

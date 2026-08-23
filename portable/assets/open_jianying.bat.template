@@ -1,0 +1,37 @@
+@echo off
+chcp 65001 >nul
+REM open_jianying.bat — 打开剪映 (首次登录 / 人工操作专用, 带升级防护)
+REM
+REM 为什么不直接双击剪映图标: 剪映的启动器会触发服务端强制升级链
+REM (实测每次启动都会下载新版本安装包). 直接双击打开的剪映没有会话保护,
+REM 防护程序会在安装包下载完成后把它关掉. 本脚本通过 render_driver 启动,
+REM 自动带上会话保护标记, 升级拦截暂停, 可以安心登录和操作.
+setlocal
+set ROOT=%~dp0
+set PY=%ROOT%python\python.exe
+set APP=%ROOT%app
+
+if not exist "%PY%" (
+  echo [错误] 找不到 %PY%
+  echo        包可能没解压完整. 请重新解压整个 zip.
+  pause
+  exit /b 1
+)
+
+if exist "%ROOT%config.env" copy /Y "%ROOT%config.env" "%APP%\.env" >nul
+
+echo ================================================================
+echo  打开剪映 - 首次登录 / 人工操作专用
+echo ================================================================
+echo  请勿双击桌面或开始菜单里的剪映图标 - 那个启动器会触发强制升级.
+echo  本脚本打开的剪映带升级防护, 扫码登录后可正常使用.
+echo  黑色窗口保持开着即可; 用完关闭剪映, 此窗口会自动结束.
+echo ================================================================
+echo.
+"%PY%" "%APP%\render_driver.py" start
+if errorlevel 1 (
+  echo [错误] 剪映启动失败. 请确认已完成第 2 步安装, 再重试.
+)
+echo.
+pause
+endlocal

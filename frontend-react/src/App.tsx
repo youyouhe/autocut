@@ -4,18 +4,56 @@
  * sidebar 4 tab + LocalSend; 共享状态 (assets / draftId) 提升到此, props 下发各面板.
  */
 import { useState, useEffect, useCallback } from 'react';
-import { Video, MessageSquare, FileEdit, MonitorPlay, Radio, LayoutTemplate, Settings } from 'lucide-react';
+import { Video, MessageSquare, FileEdit, MonitorPlay, Radio, LayoutTemplate, Settings, Film, Users, Server, LogOut, Loader2 } from 'lucide-react';
 import AssetPanel from './components/AssetPanel';
 import ChatPanel from './components/ChatPanel';
 import DraftPanel from './components/DraftPanel';
 import RenderPanel from './components/RenderPanel';
+import RenderNodePanel from './components/RenderNodePanel';
 import TemplatesPanel from './components/TemplatesPanel';
 import SettingsPanel from './components/SettingsPanel';
+import TimelinePanel from './components/TimelinePanel';
+import AdminPanel from './components/AdminPanel';
 import ReceiveDialog from './components/ReceiveDialog';
+import Login from './components/Login';
 import * as api from './api';
-import type { Asset } from './api';
+import type { Asset, Me } from './api';
 
 export default function App() {
+  // ---------- 登录门 (LoginGate) ----------
+  // me: null=未登录/会话失效 → 渲染 Login; 非空 → 主界面.
+  // booting: 启动探测 getMe() 期间, 避免闪烁先显示登录页.
+  const [me, setMe] = useState<Me | null>(null);
+  const [booting, setBooting] = useState(true);
+
+  useEffect(() => {
+    // 注册 401 全局回调: 任何 jsonFetch 遇 401 → 清 me → 回登录页.
+    api.setAuthExpiredHandler(() => setMe(null));
+    // 启动探测登录态 (有 session cookie 则直接进主界面).
+    api.getMe()
+      .then(u => setMe(u))
+      .catch(() => setMe(null))
+      .finally(() => setBooting(false));
+  }, []);
+
+  const handleLogout = async () => {
+    try { await api.logout(); } catch { /* ignore */ }
+    setMe(null);
+  };
+
+  if (booting) {
+    return (
+      <div className="flex items-center justify-center h-screen w-full bg-[#FDFCF8] text-[#121212]">
+        <Loader2 size={24} className="animate-spin opacity-40" />
+      </div>
+    );
+  }
+  if (!me) return <Login onLogin={setMe} />;
+
+  return <Workbench me={me} onLogout={handleLogout} />;
+}
+
+function Workbench({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [activeTab, setActiveTab] = useState('assets');
   const [isReceiveOpen, setIsReceiveOpen] = useState(false);
 
@@ -73,8 +111,14 @@ export default function App() {
     { id: 'chat', label: 'Chat', icon: MessageSquare },
     { id: 'templates', label: 'Templates', icon: LayoutTemplate },
     { id: 'drafts', label: 'Drafts', icon: FileEdit },
+    { id: 'timeline', label: 'Timeline', icon: Film },
     { id: 'render', label: 'Tasks', icon: MonitorPlay },
-    { id: 'settings', label: 'Settings', icon: Settings },
+    // 每用户自助配置自己的 render 节点 (非 admin 也能配), 故无条件可见.
+    { id: 'render-node', label: 'Render Node', icon: Server },
+    // Settings 是平台级配置 (LLM/ASR 密钥), admin-only.
+    ...(me.is_admin ? [{ id: 'settings', label: 'Settings', icon: Settings }] : []),
+    // 用户管理仅 admin 可见 (对应"用户统一由 admin 管理").
+    ...(me.is_admin ? [{ id: 'admin', label: 'Users', icon: Users }] : []),
   ];
 
   return (
@@ -87,6 +131,19 @@ export default function App() {
             <span className="text-[9px] uppercase tracking-[0.3em] font-medium opacity-50">System / v2.4</span>
             <span className={`w-1.5 h-1.5 rounded-full ${online ? 'bg-emerald-600' : 'bg-red-600'}`} />
           </div>
+        </div>
+        {/* 当前登录用户 + 登出 */}
+        <div className="px-8 py-4 border-b border-[#121212]/10 flex items-center justify-between">
+          <div className="min-w-0">
+            <div className="text-[9px] uppercase tracking-[0.3em] opacity-40 mb-0.5">Signed in</div>
+            <div className="text-xs font-mono truncate" title={me.username}>
+              {me.display_name || me.username}
+              {me.is_admin && <span className="ml-1 text-[9px] uppercase opacity-50">admin</span>}
+            </div>
+          </div>
+          <button onClick={onLogout} title="登出" className="p-1.5 hover:bg-[#121212]/10 transition-colors">
+            <LogOut size={14} />
+          </button>
         </div>
         <nav className="flex-1 p-8 space-y-4">
           {tabs.map(tab => {
@@ -130,12 +187,21 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-hidden relative">
-        {activeTab === 'assets' && <AssetPanel assets={assets} setAssets={setAssets} refreshAssets={refreshAssetsWithCache} />}
+        {activeTab === 'assets' && <AssetPanel assets={assets} setAssets={setAssets} refreshAssets={refreshAssetsWithCache} draftId={draftId} />}
         {activeTab === 'chat' && <ChatPanel assets={assets} draftId={draftId} setDraftId={setDraftId} conversationId={conversationId} setConversationId={setConversationId} refreshAssets={refreshAssets} />}
         {activeTab === 'templates' && <TemplatesPanel setDraftId={setDraftId} onGenerated={() => setActiveTab('drafts')} />}
-        {activeTab === 'drafts' && <DraftPanel onRendered={() => setActiveTab('render')} onCreated={() => setActiveTab('chat')} setDraftId={setDraftId} />}
+        {activeTab === 'drafts' && <DraftPanel onRendered={() => setActiveTab('render')} onCreated={() => setActiveTab('chat')} onOpenChat={(id) => { setDraftId(id); setActiveTab('chat'); }} onOpenTimeline={(id) => { setDraftId(id); setActiveTab('timeline'); }} setDraftId={setDraftId} />}
+        {activeTab === 'timeline' && (
+          <TimelinePanel
+            draftId={draftId}
+            setDraftId={setDraftId}
+            onBack={() => setActiveTab('drafts')}
+          />
+        )}
         {activeTab === 'render' && <RenderPanel />}
-        {activeTab === 'settings' && <SettingsPanel />}
+        {activeTab === 'render-node' && <RenderNodePanel />}
+        {activeTab === 'settings' && me.is_admin && <SettingsPanel />}
+        {activeTab === 'admin' && me.is_admin && <AdminPanel />}
       </main>
 
       {isReceiveOpen && (

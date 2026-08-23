@@ -136,6 +136,11 @@ export default function RenderPanel() {
                   {(task.mp4 || task.mp4_name) && <span className="truncate max-w-[200px]">File: {task.mp4 || task.mp4_name}</span>}
                 </div>
                 <ProgressBar task={task} />
+                {task.fallback_reason && (
+                  <div className="mt-3 text-xs text-amber-800 border border-amber-700/20 bg-amber-50 p-3 font-mono break-all">
+                    ⚠ {task.fallback_reason}
+                  </div>
+                )}
                 {task.status === 'error' && task.error && (
                   <div className="mt-3 text-xs text-red-700 border border-red-700/20 bg-red-50 p-3 font-mono break-all">{task.error}</div>
                 )}

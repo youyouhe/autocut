@@ -1,0 +1,23 @@
+# autocut-web.service — systemd unit 模板 (Linux web 后端)
+# 部署: 复制到 /etc/systemd/system/autocut-web.service, 改 User/WorkingDirectory/路径后:
+#   systemctl daemon-reload && systemctl enable --now autocut-web
+# 日志: journalctl -u autocut-web -f
+#
+# 环境变量: 用 EnvironmentFile 指向 .env (或直接 Environment= 一行行写)。
+# 关键 env: SECRET_KEY / INTERNAL_TOKEN / RENDER_SERVICE_URL / RENDER_SERVICE_TOKEN /
+#           QWEN_API_KEY / ASR_API_KEY / JY_DRAFT_ROOT 等 (见 config.py)。
+[Unit]
+Description=Autocut Web Backend (render_server, multi-tenant)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/autocut
+EnvironmentFile=/opt/autocut/.env
+ExecStart=/usr/bin/python3 -m waitress --host=0.0.0.0 --port=9010 --threads=8 --channel-timeout=900 render_server:app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -37,8 +37,13 @@ serve.pid
 focus_*.txt
 _repro*.txt
 chat_test_out.txt
+chat_deltest_out.txt
 2026-*.txt
 render_*.log
+# 本地调试/抓取草稿 (下划线前缀 = 一次性脚本/正文转储)
+_*.py
+_*.json
+_*.txt
 # Frida/Qt UI-automation diagnostic probes & screenshot dumps
 qml_tree.js
 v15_shots/
@@ -50,6 +55,7 @@ test_draft.zip
 tasks.db
 chats.db
 assets.db
+users.db
 main_video.json
 
 # Media & Uploads (runtime data)

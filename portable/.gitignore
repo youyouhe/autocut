@@ -1,0 +1,10 @@
+# 缓存 (下载的 embeddable python / ffmpeg / get-pip 等)
+_cache/
+# 打包中间产物
+_build/
+# 本地验证用的解压目录 (勿提交)
+_smoke_extract/
+# 最终产出 zip
+autocut-render-node-portable.zip
+# 剪映官方安装器二进制 (体积大, 手动放入, 不进 git)
+capcut-installer/*.exe

@@ -1,0 +1,619 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>免安装渲染节点 · 安装向导</title>
+<style>
+  :root {
+    --bg: #FDFCF8;
+    --ink: #121212;
+    --ink-60: rgba(18,18,18,0.6);
+    --ink-40: rgba(18,18,18,0.4);
+    --ink-20: rgba(18,18,18,0.2);
+    --ink-10: rgba(18,18,18,0.1);
+    --line: rgba(18,18,18,0.1);
+    --amber-bg: #fffbeb;
+    --amber-bd: rgba(180,83,9,0.2);
+    --amber-tx: #92400e;
+    --emerald-tx: #047857;
+    --emerald-bd: rgba(4,120,87,0.35);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+    font-weight: 300;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== 向导双栏布局 ===== */
+  .wizard {
+    display: grid;
+    grid-template-columns: 272px 1fr;
+    gap: 0;
+    max-width: 1100px;
+    margin: 0 auto;
+    min-height: 100vh;
+  }
+  .steps-rail {
+    border-right: var(--line);
+    padding: 48px 24px 48px 32px;
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+    overflow-y: auto;
+  }
+  .rail-head { margin-bottom: 24px; }
+  .rail-head .eyebrow {
+    font-size: 10px; letter-spacing: 0.3em; text-transform: uppercase;
+    font-weight: 700; color: var(--ink-40); margin-bottom: 6px;
+  }
+  .rail-head .rail-title {
+    font-family: "Cormorant Garamond", Georgia, serif; font-style: italic;
+    font-weight: 700; font-size: 22px; letter-spacing: -0.01em;
+  }
+  .rail-list { list-style: none; }
+  .rail-item {
+    display: flex; align-items: center; gap: 14px;
+    padding: 11px 8px; cursor: pointer; border-radius: 3px;
+    transition: background .15s; color: var(--ink-40);
+  }
+  .rail-item:hover { background: var(--ink-10); }
+  .rail-item .badge {
+    flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%;
+    border: 1px solid var(--ink-20); display: flex; align-items: center;
+    justify-content: center; font-family: "Cormorant Garamond", serif;
+    font-style: italic; font-weight: 700; font-size: 15px; line-height: 1;
+    background: transparent; color: var(--ink-40); transition: all .2s;
+  }
+  .rail-item .rtitle {
+    font-size: 13.5px; font-weight: 500; line-height: 1.35;
+  }
+  .rail-item.todo .badge { color: var(--ink-40); }
+  .rail-item.todo .rtitle { color: var(--ink-40); }
+  .rail-item.current {
+    background: var(--ink-10); color: var(--ink);
+  }
+  .rail-item.current .badge {
+    background: var(--ink); color: var(--bg); border-color: var(--ink);
+    box-shadow: 0 0 0 3px rgba(18,18,18,0.08);
+  }
+  .rail-item.current .rtitle { color: var(--ink); font-weight: 600; }
+  .rail-item.done .badge {
+    background: transparent; color: var(--emerald-tx);
+    border-color: var(--emerald-bd);
+  }
+  .rail-item.done .badge::after { content: "✓"; font-style: normal; font-family: inherit; }
+  .rail-item.done .badge .num { display: none; }
+  .rail-item.done .rtitle { color: var(--ink-60); text-decoration: line-through; text-decoration-color: var(--ink-20); }
+
+  /* ===== 右侧步骤面板 ===== */
+  .step-panel { padding: 48px 48px 120px; min-width: 0; }
+  .panel-head { border-bottom: var(--line); padding-bottom: 28px; margin-bottom: 36px; }
+  .panel-head .eyebrow {
+    font-size: 10px; letter-spacing: 0.3em; text-transform: uppercase;
+    font-weight: 700; color: var(--ink-40); margin-bottom: 10px;
+  }
+  h1 {
+    font-family: "Cormorant Garamond", Georgia, "Times New Roman", serif;
+    font-weight: 700; font-style: italic; font-size: 44px;
+    letter-spacing: -0.01em; line-height: 1.1;
+  }
+  .lede { margin-top: 14px; color: var(--ink-60); font-size: 15px; max-width: 580px; }
+  .meta-row {
+    display: flex; gap: 24px; margin-top: 18px; flex-wrap: wrap;
+    font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+    font-weight: 700; color: var(--ink-40);
+  }
+  .meta-row span::before { content: "·"; margin-right: 8px; opacity: 0.5; }
+  .meta-row span:first-child::before { content: ""; margin: 0; }
+
+  /* 当前步骤头 */
+  .cur-step-head { display: flex; align-items: baseline; gap: 20px; margin-bottom: 22px; }
+  .step-num {
+    font-family: "Cormorant Garamond", Georgia, serif; font-style: italic;
+    font-size: 40px; font-weight: 700; line-height: 1; color: var(--ink);
+    min-width: 52px;
+  }
+  .step-title { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+
+  .step-body { color: var(--ink); font-size: 15px; }
+  .step-body p { margin-bottom: 12px; }
+  .step-body p:last-child { margin-bottom: 0; }
+  .step-body strong { font-weight: 600; }
+  .step-body ul, .step-body ol { padding-left: 20px; }
+  code, .mono {
+    font-family: "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+    font-size: 13px; background: var(--ink-10); padding: 2px 6px;
+    border-radius: 2px; word-break: break-all;
+  }
+  .code-block {
+    font-family: "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+    font-size: 13px; background: var(--ink); color: #f4f4f0;
+    padding: 16px 20px; margin: 12px 0; border-radius: 2px;
+    overflow-x: auto; white-space: pre; line-height: 1.6;
+  }
+  .code-block .c { color: #888; }
+
+  .expect {
+    margin-top: 16px; padding: 14px 18px; border: 1px solid var(--ink-10);
+    background: rgba(18,18,18,0.02); font-size: 14px;
+  }
+  .expect .label {
+    font-size: 9px; letter-spacing: 0.25em; text-transform: uppercase;
+    font-weight: 700; color: var(--ink-40); margin-bottom: 6px; display: block;
+  }
+  .expect.ok .label { color: var(--emerald-tx); }
+
+  details.faq { margin-top: 16px; border-top: var(--line); }
+  details.faq summary {
+    cursor: pointer; padding: 12px 0; font-size: 14px; font-weight: 500;
+    color: var(--amber-tx); list-style: none;
+  }
+  details.faq summary::before { content: "▸ "; opacity: 0.6; }
+  details.faq[open] summary::before { content: "▾ "; }
+  details.faq .ans { padding: 0 0 14px 20px; font-size: 14px; color: var(--ink-60); }
+
+  .note {
+    margin-top: 16px; padding: 14px 18px; border: 1px solid var(--amber-bd);
+    background: var(--amber-bg); font-size: 14px; color: var(--amber-tx);
+  }
+  .note .label {
+    font-size: 9px; letter-spacing: 0.25em; text-transform: uppercase;
+    font-weight: 700; margin-bottom: 4px; display: block;
+  }
+
+  /* 运行此步按钮 — 定位到文件所在文件夹 (浏览器 file:// 下无法执行 .bat,
+     但点击「目录链接」会在资源管理器里打开该文件夹, 用户再双击 .bat) */
+  .run-block { margin: 20px 0 8px; }
+  a.run-btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    border: 1px solid var(--ink); background: var(--ink); color: var(--bg);
+    padding: 14px 28px; font-size: 13px; letter-spacing: 0.2em;
+    text-transform: uppercase; font-weight: 700; cursor: pointer;
+    text-decoration: none; transition: all .15s; border-radius: 2px;
+  }
+  a.run-btn:hover { background: transparent; color: var(--ink); }
+  a.run-btn::before { content: "📂"; font-size: 14px; opacity: 0.9; }
+  .run-hint {
+    margin-top: 10px; font-size: 12.5px; color: var(--ink-40);
+    line-height: 1.6;
+  }
+  .run-hint code { font-size: 12px; }
+
+  .ip-box { display: flex; gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  button.gen {
+    border: 1px solid var(--ink); background: var(--ink); color: var(--bg);
+    padding: 8px 16px; font-size: 10px; letter-spacing: 0.2em;
+    text-transform: uppercase; font-weight: 700; cursor: pointer;
+    transition: all .15s;
+  }
+  button.gen:hover { background: transparent; color: var(--ink); }
+  #tokOut { min-width: 320px; }
+
+  /* 底部导航 */
+  .nav-row {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 48px; padding-top: 28px; border-top: var(--line);
+  }
+  button.nav {
+    border: 1px solid var(--ink); background: transparent; color: var(--ink);
+    padding: 12px 24px; font-size: 12px; letter-spacing: 0.18em;
+    text-transform: uppercase; font-weight: 700; cursor: pointer;
+    transition: all .15s; border-radius: 2px;
+  }
+  button.nav:hover:not(:disabled) { background: var(--ink); color: var(--bg); }
+  button.nav:disabled { opacity: 0.25; cursor: not-allowed; }
+  button.nav.next { background: var(--ink); color: var(--bg); }
+  button.nav.next:hover:not(:disabled) { background: transparent; color: var(--ink); }
+  .nav-progress {
+    font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+    font-weight: 700; color: var(--ink-40);
+  }
+
+  .panel-footer {
+    margin-top: 56px; padding-top: 24px; border-top: var(--line);
+    font-size: 12px; color: var(--ink-40); letter-spacing: 0.05em;
+  }
+
+  /* 响应式: 窄屏塌单栏, rail 变顶部水平条 */
+  @media (max-width: 820px) {
+    .wizard { grid-template-columns: 1fr; }
+    .steps-rail {
+      position: static; max-height: none; border-right: none;
+      border-bottom: var(--line); padding: 20px 24px;
+    }
+    .rail-list {
+      display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px;
+    }
+    .rail-item { flex-shrink: 0; flex-direction: column; gap: 6px; padding: 8px 10px; min-width: 72px; text-align: center; }
+    .rail-item .rtitle { font-size: 11px; }
+    .step-panel { padding: 32px 24px 80px; }
+    h1 { font-size: 34px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wizard">
+
+  <!-- 左侧进度侧栏 -->
+  <aside class="steps-rail">
+    <div class="rail-head">
+      <div class="eyebrow">Portable Render Node · Win10</div>
+      <div class="rail-title">安装进度</div>
+    </div>
+    <ol class="rail-list" id="railList"></ol>
+  </aside>
+
+  <!-- 右侧步骤面板 -->
+  <main class="step-panel">
+    <header class="panel-head">
+      <div class="eyebrow">Installation Wizard</div>
+      <h1>免安装渲染节点</h1>
+      <p class="lede">
+        解压即用。本包已自带 Python、依赖库、ffmpeg、剪映官方安装器和全部脚本。
+        按下面 8 步操作，约 15 分钟完成配置，之后你的这台 Win10 电脑就成为一个
+        渲染节点，渲染时优先用你本机的剪映。
+      </p>
+      <div class="meta-row">
+        <span>无需安装 Python</span>
+        <span>无需命令行</span>
+        <span>解压即用</span>
+        <span>离线指引</span>
+      </div>
+    </header>
+
+    <div id="panel" class="panel-body"></div>
+
+    <div class="nav-row">
+      <button class="nav prev" id="navPrev" onclick="goPrev()">← 上一步</button>
+      <span class="nav-progress" id="navProgress"></span>
+      <button class="nav next" id="navNext" onclick="goNext()">下一步 →</button>
+    </div>
+
+    <div class="panel-footer">
+      免安装渲染节点 · 配置完成后这台 Win10 即为你的专属渲染节点。
+      遇到问题可参考每步下方的「常见问题」，或查阅同目录 README.md。
+    </div>
+  </main>
+
+</div>
+
+<script>
+  // ===== 步骤数据 =====
+  var STEPS = [
+    {
+      num: "01", title: "解压安装包",
+      html:
+        '<p>把 <code>autocut-render-node-portable.zip</code> 解压到一个<strong>任意目录</strong>。' +
+        '右键 zip →「全部解压」即可。</p>' +
+        '<p>解压后会得到一个 <code>autocut-render-node</code> 文件夹，里面有 ' +
+        '<code>start_here.html</code>（本页）、<code>config.env</code>、' +
+        '<code>start.bat</code>、<code>calibrate.bat</code>、<code>python</code>、' +
+        '<code>ffmpeg</code>、<code>app</code>、<code>capcut-installer</code> 等。</p>' +
+        '<div class="note"><span class="label">建议</span>' +
+        '解压路径<strong>尽量不含中文和空格</strong>，例如 <code>D:\\autocut-render-node</code>，' +
+        '能减少各类奇怪问题。放在桌面也行。</div>'
+    },
+    {
+      num: "02", title: "安装剪映",
+      run: { label: "定位到安装器", href: "capcut-installer/",
+        hint: "点击后资源管理器会打开 <code>capcut-installer</code> 文件夹。在里面找到 <code>剪映专业版5.9.exe</code>，<strong>双击运行</strong>，按默认选项一路「下一步」装完。" },
+      html:
+        '<p>打开解压目录里的 <code>capcut-installer</code> 文件夹，双击里面的 ' +
+        '<code>剪映专业版5.9.exe</code>（剪映官方安装器），按默认选项一路「下一步」装完。</p>' +
+        '<p>装完后<strong>不要去点桌面/开始菜单的剪映图标</strong>——那个启动器每次都会触发强制升级。'+
+        '首次登录请运行解压目录里的 <code>open_jianying.bat</code>（第 2½ 步之后可用），' +
+        '它会以带升级防护的方式打开剪映，扫码登录即可。</p>' +
+        '<div class="expect ok"><span class="label">预期结果</span>' +
+        '剪映默认装到 <code>%LocalAppData%\\JianyingPro\\Apps</code>，' +
+        '本包的配置已经对齐这个路径，无需手动指定。</div>' +
+        '<div class="note"><span class="label">装完后必须禁用自动升级（下一步）</span>' +
+        '剪映若自动升级到新版本，<strong>草稿格式和校准坐标都会跟着变</strong>，导致本节点渲染失败。' +
+        '装完剪映后请务必运行 <code>fix_update.bat</code> 把版本锁定在 5.9。</div>',
+      faqs: [
+        { q: "找不到 剪映专业版5.9.exe？",
+          a: '如果 capcut-installer 文件夹是空的或文件名不一样，说明打包时漏放了安装器。' +
+             '请到剪映官网 <code>jianying.com</code> 下载 Windows 版安装包，放进该文件夹后再继续。本渲染节点没有剪映就无法工作。' },
+        { q: "我已经装过剪映了，还要再装吗？",
+          a: '不用。只要 <code>%LocalAppData%\\JianyingPro\\Apps\\&lt;版本号&gt;\\JianyingPro.exe</code> 存在即可，可直接跳到下一步禁用升级。' },
+        { q: "不小心双击了剪映图标怎么办？",
+          a: '没关系——防护程序会在升级包下载完成后把这次启动关掉（约半分钟）。' +
+             '之后改用 <code>open_jianying.bat</code> 打开即可。若提示已有剪映在运行，等几秒重试。' }
+      ]
+    },
+    {
+      num: "2½", title: "禁用剪映自动升级",
+      run: { label: "定位到 fix_update.bat", href: ".",
+        hint: "点击后资源管理器会打开解压根目录。找到 <code>fix_update.bat</code>，<strong>右键选「以管理员身份运行」</strong>。运行完窗口显示「已禁止剪映自动升级, 当前版本锁定」即成功。" },
+      html:
+        '<p>运行 <code>fix_update.bat</code>（建议右键「以管理员身份运行」）。它会做三件事' +
+        '把版本<strong>锁死在 5.9</strong>：</p>' +
+        '<ol>' +
+        '<li>把各版本目录里的更新器 <code>update.exe</code> 改名禁用；</li>' +
+        '<li>隔离 Apps 根目录的复位启动器（服务端强更会把它还原回来）；</li>' +
+        '<li>给 Apps 目录加「拒绝创建文件/子目录」的系统级锁定——强更的落地动作全部发生在这里。</li>' +
+        '</ol>' +
+        '<div class="expect ok"><span class="label">预期结果</span>' +
+        '命令行窗口依次显示「已禁用」「已隔离」「已上锁」，最后提示' +
+        '「已禁止剪映自动升级, 当前版本锁定」。若第 3 步显示警告，说明没用管理员身份运行，重跑一次即可。</div>' +
+        '<div class="note"><span class="label">为什么必须做这步</span>' +
+        '本节点的<strong>校准坐标和草稿格式都绑定剪映版本</strong>。实测剪映服务端会对老版本' +
+        '<strong>强制下发升级包</strong>（改客户端版本号也没用），一旦升上去，按钮位置和草稿结构都可能变化，' +
+        '导致校准失效、渲染失败。</div>',
+      faqs: [
+        { q: "提示「没有找到可禁用的更新器」？",
+          a: '可能剪映还没装好（回上一步），或安装目录不是默认位置。若剪映已能正常使用，' +
+             '可直接继续下一步校准；但仍建议留意剪映弹出的升级提示，<strong>不要点升级</strong>。' },
+        { q: "以后确实要手动升级剪映怎么办？",
+          a: '先解除目录锁：命令行运行 <code>icacls "%LocalAppData%\\JianyingPro\\Apps" /remove:d Everyone</code>，' +
+             '再正常升级；升级完成后<strong>重跑一次 <code>fix_update.bat</code></strong> 即可重新锁定。' }
+      ]
+    },
+    {
+      num: "03", title: "配置 config.env",
+      html:
+        '<p>用记事本（或任意文本编辑器）打开解压目录里的 <code>config.env</code>。' +
+        '一般只需要改一个地方：<strong>设置调用令牌 <code>RENDER_SERVICE_TOKEN</code></strong>。</p>' +
+        '<p>把下面这行的等号后面填上一个随机串（建议 32 位以上）。点按钮可直接生成一个：</p>' +
+        '<div class="ip-box">' +
+          '<button class="gen" onclick="genTok()">生成随机令牌</button>' +
+          '<code id="tokOut" class="mono">（点左边按钮生成）</code>' +
+        '</div>' +
+        '<div class="code-block">RENDER_SERVICE_TOKEN=<span class="c">← 把生成的串填在这里</span></div>' +
+        '<p>其余项通常不用动：</p>' +
+        '<ul style="margin:8px 0 12px; color:var(--ink-60); font-size:14px;">' +
+          '<li><code>RENDER_SERVICE_HOST=0.0.0.0</code> — 允许局域网访问，保持不变。</li>' +
+          '<li><code>RENDER_SERVICE_PORT=9020</code> — 端口，没冲突就别改。</li>' +
+          '<li>剪映路径三项保持注释（默认推导），除非你把剪映装到了非默认位置。</li>' +
+        '</ul>' +
+        '<div class="note"><span class="label">记下这个令牌</span>' +
+        '最后一步填回 web 后端时要用到<strong>同一个</strong>令牌。令牌是这台节点和你账号之间的密码，' +
+        '两边必须一致。留空虽然能跑，但任何能连到这台机器的人都能调用它，不建议。</div>',
+      faqs: [
+        { q: "令牌怎么手动生成？",
+          a: '也可以在 PowerShell 里运行 <code>-join ((48..57)+(65..90)+(97..122) | Get-Random -Count 32 | % {[char]$_})</code> 得到一个 32 位随机串。' }
+      ]
+    },
+    {
+      num: "04", title: "首跑校准",
+      run: { label: "定位到 calibrate.bat", href: ".",
+        hint: "点击后资源管理器会打开解压根目录。找到 <code>calibrate.bat</code>，<strong>双击运行</strong>。运行后会打开剪映，按命令行提示依次手动点击 5 个位置。" },
+      html:
+        '<p>运行 <code>calibrate.bat</code>。它会打开剪映，然后你在命令行窗口按提示 ' +
+        '<strong>手动点击 5 个位置</strong>，系统会记录这些坐标：</p>' +
+        '<ol style="margin:8px 0 12px; font-size:14px;">' +
+          '<li>导出卡片（草稿列表里某个草稿的卡片）</li>' +
+          '<li>导出按钮</li>' +
+          '<li>确认导出</li>' +
+          '<li>完成后关闭弹窗</li>' +
+          '<li>关闭编辑器</li>' +
+        '</ol>' +
+        '<div class="expect ok"><span class="label">预期结果</span>' +
+        '校准成功后，<code>app\\</code> 文件夹里会生成 <code>calib.json</code>。' +
+        'calibrate.bat 结束时会提示「已生成 calib.json」。</div>' +
+        '<div class="note"><span class="label">每台机器只需一次</span>' +
+        'calib.json 记录的是<strong>这台机器、这个屏幕分辨率、这个剪映版本</strong>下的按钮坐标。' +
+        '以后只要不换屏幕分辨率、不换剪映大版本，就不用重跑。本包不会预置 calib.json，' +
+        '必须在你自己的机器上校准一次。</div>',
+      faqs: [
+        { q: "校准时报错 / 没弹出剪映？",
+          a: '先确认上一步剪映装好且能手动打开到主界面。校准前最好先手动登录剪映账号。' +
+             '如果剪映窗口位置怪异，把窗口拖到屏幕左上角再校准。屏幕缩放建议设为 100%。' }
+      ]
+    },
+    {
+      num: "05", title: "启动服务",
+      run: { label: "定位到 start.bat", href: ".",
+        hint: "点击后资源管理器会打开解压根目录。找到 <code>start.bat</code>，<strong>双击运行</strong>。会弹出黑色命令行窗口显示「render_service 已启动」，保持窗口开着即成功。" },
+      html:
+        '<p>运行 <code>start.bat</code>。会弹出一个黑色命令行窗口，显示 <code>render_service 已启动</code>。</p>' +
+        '<div class="expect ok"><span class="label">预期结果</span>' +
+        '窗口保持打开，服务在后台运行。<strong>不要关闭这个窗口</strong>，' +
+        '关闭即停止服务。停止也可以双击 <code>stop.bat</code>。</div>' +
+        '<div class="note"><span class="label">想后台无窗口运行？</span>' +
+        '用记事本打开 <code>start.bat</code>，把里面的 <code>python.exe</code> ' +
+        '改成 <code>pythonw.exe</code> 保存，再双击就不会弹窗（但也看不到日志了，首跑不建议）。</div>',
+      faqs: [
+        { q: "提示端口 9020 被占用？",
+          a: '说明已有别的程序（或上一个没关的 render_service）占着 9020。' +
+             '双击 <code>stop.bat</code> 清掉，再重新运行 <code>start.bat</code>。' +
+             '若仍占用，可在 config.env 里把 <code>RENDER_SERVICE_PORT</code> 改成别的端口' +
+             '（如 9021），但最后一步填回 web 后端的端口也要同步改。' }
+      ]
+    },
+    {
+      num: "06", title: "验证连接",
+      html:
+        '<p>打开浏览器，访问下面这个地址（本机自测用 127.0.0.1）：</p>' +
+        '<div class="code-block">http://127.0.0.1:9020/health</div>' +
+        '<div class="expect ok"><span class="label">预期结果</span>' +
+        '页面应返回类似 <code>{"ok":true,"service":"render_service","videos_dir":"...","desktops":["JYRender_0"]}</code> ' +
+        '的 JSON。看到 <code>"ok":true</code> 就说明服务正常。</div>' +
+        '<p style="margin-top:16px;">如果你要让<strong>另一台电脑</strong>（web 后端所在的服务器）连过来，' +
+        '要用这台机器的局域网 IP。点按钮查看本机 IP：</p>' +
+        '<div class="ip-box">' +
+          '<button class="gen" onclick="showIp()">查看本机局域网 IP</button>' +
+          '<code id="ipOut" class="mono">（点左边按钮，按提示操作）</code>' +
+        '</div>' +
+        '<p style="margin-top:12px;">那台电脑应访问 <code>http://本机IP:9020/health</code>。</p>',
+      faqs: [
+        { q: "别的电脑访问不通 / 超时？",
+          a: '多半是 Windows 防火墙拦了 9020 端口。到「Windows 安全中心 → 防火墙 → 高级设置 → 入站规则」' +
+             '新建一条允许 TCP 9020 的规则。或临时关闭防火墙测试。另确认两台机器在同一局域网、能互相 ping 通。' },
+        { q: "本机 127.0.0.1 也访问不了？",
+          a: '回到上一步，确认 start.bat 窗口还开着、显示「已启动」。' +
+             '窗口里若有红色报错（如找不到剪映、frida 错误），按提示处理。' }
+      ]
+    },
+    {
+      num: "07", title: "填回 web 后端",
+      html:
+        '<p>打开你的 web 后端（AI 视频工作台），登录后点左侧 <strong>Render Node</strong> 标签页，填入：</p>' +
+        '<ul style="margin:8px 0 12px; font-size:14px;">' +
+          '<li><strong>Render Service URL</strong>：<code>http://本机IP:9020</code>' +
+          '（本机自测可填 <code>http://127.0.0.1:9020</code>；' +
+          '若 web 后端在另一台机器，用上一步查到的本机局域网 IP）</li>' +
+          '<li><strong>X-Render-Token</strong>：第 3 步在 config.env 里设的 ' +
+          '<code>RENDER_SERVICE_TOKEN</code> 值（两边必须一致）</li>' +
+        '</ul>' +
+        '<p>点 <strong>测试连接</strong>，应返回「连接成功 · render_service · desktops: JYRender_0」。' +
+        '然后点 <strong>Save</strong> 保存。</p>' +
+        '<div class="expect ok"><span class="label">完成</span>' +
+        '之后你提交的渲染任务会优先走这台节点（用你本机的剪映导出）。' +
+        '如果这台节点连不上或提交失败，会自动回退到公共节点，并在任务上标注回退原因。</div>' +
+        '<div class="note"><span class="label">日常使用</span>' +
+        '以后每次要用，只要双击 <code>start.bat</code> 启动服务即可（校准过的机器不用再校准）。' +
+        '不用时双击 <code>stop.bat</code> 或直接关掉 start.bat 的窗口。config.env 改过后需要重启 start.bat 生效。</div>'
+    }
+  ];
+
+  // ===== localStorage 健壮读写 =====
+  function lsGet(key, def) {
+    try { var v = localStorage.getItem(key); return v === null ? def : v; }
+    catch (e) { return def; }
+  }
+  function lsSet(key, val) {
+    try { localStorage.setItem(key, val); } catch (e) { /* 静默 */ }
+  }
+
+  var curIndex = 0;
+  var maxDone = parseInt(lsGet('wizard-done', '-1'), 10);
+  if (isNaN(maxDone)) maxDone = -1;
+
+  // ===== 渲染侧栏 =====
+  function renderRail() {
+    var list = document.getElementById('railList');
+    var html = '';
+    for (var i = 0; i < STEPS.length; i++) {
+      var cls = 'rail-item todo';
+      if (i === curIndex) cls = 'rail-item current';
+      else if (i <= maxDone) cls = 'rail-item done';
+      html +=
+        '<li class="' + cls + '" onclick="renderStep(' + i + ')">' +
+          '<span class="badge"><span class="num">' + STEPS[i].num + '</span></span>' +
+          '<span class="rtitle">' + STEPS[i].title + '</span>' +
+        '</li>';
+    }
+    list.innerHTML = html;
+  }
+
+  // ===== 渲染当前步骤 =====
+  function renderStep(i) {
+    if (i < 0 || i >= STEPS.length) return;
+    curIndex = i;
+    if (i > maxDone) { maxDone = i; lsSet('wizard-done', String(maxDone)); }
+    lsSet('wizard-step', String(i));
+
+    var s = STEPS[i];
+    var h =
+      '<div class="cur-step-head">' +
+        '<div class="step-num">' + s.num + '</div>' +
+        '<div class="step-title">' + s.title + '</div>' +
+      '</div>' +
+      '<div class="step-body">' + s.html;
+
+    if (s.run) {
+      // 改写 href: 让浏览器导航到目标 .bat/.exe 所在的「目录」, 而非文件本身.
+      // file:// 下浏览器无法执行可执行文件 (会下载/打开为文本), 但导航到目录
+      // 会让系统在资源管理器里打开该文件夹, 用户即可双击运行. 对目录型 href (已以 / 结尾)
+      // 或根目录 (".") 直接用; 对文件型 href 取到所在目录.
+      var targetHref = s.run.href;
+      var slash = targetHref.lastIndexOf('/');
+      if (slash >= 0) {
+        // 取到末段: 若末段为 "." 或空 (目录型 href), 整串即目录; 否则截到末段 (含末段).
+        var lastSeg = targetHref.substring(slash + 1);
+        if (lastSeg === '' || lastSeg === '.') {
+          targetHref = targetHref; // 目录型, 原样 (如 "capcut-installer/")
+        } else {
+          targetHref = targetHref.substring(0, slash + 1); // 截到所在目录
+        }
+      }
+      h +=
+        '<div class="run-block">' +
+          '<a class="run-btn" href="' + targetHref + '">' + s.run.label + '</a>' +
+          '<div class="run-hint">' + s.run.hint + '</div>' +
+        '</div>';
+    }
+
+    if (s.faqs) {
+      for (var k = 0; k < s.faqs.length; k++) {
+        h +=
+          '<details class="faq"><summary>' + s.faqs[k].q + '</summary>' +
+          '<div class="ans">' + s.faqs[k].a + '</div></details>';
+      }
+    }
+    h += '</div>';
+
+    var panel = document.getElementById('panel');
+    panel.innerHTML = h;
+
+    // 导航按钮
+    document.getElementById('navPrev').disabled = (i === 0);
+    var nextBtn = document.getElementById('navNext');
+    if (i === STEPS.length - 1) {
+      nextBtn.innerHTML = '完成 ✓';
+    } else {
+      nextBtn.innerHTML = '下一步 →';
+    }
+    document.getElementById('navProgress').textContent =
+      (i + 1) + ' / ' + STEPS.length;
+
+    renderRail();
+    window.scrollTo(0, 0);
+  }
+
+  function goNext() {
+    if (curIndex < STEPS.length - 1) {
+      renderStep(curIndex + 1);
+    }
+  }
+  function goPrev() {
+    if (curIndex > 0) {
+      renderStep(curIndex - 1);
+    }
+  }
+
+  // ===== 初始化 =====
+  (function init() {
+    var saved = parseInt(lsGet('wizard-step', '0'), 10);
+    if (isNaN(saved) || saved < 0 || saved >= STEPS.length) saved = 0;
+    renderStep(saved);
+  })();
+
+  // ===== 生成 32 位随机令牌 (字母+数字). 纯本地, 不联网. =====
+  function genTok() {
+    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    var s = "";
+    if (window.crypto && window.crypto.getRandomValues) {
+      var arr = new Uint32Array(32);
+      window.crypto.getRandomValues(arr);
+      for (var i = 0; i < 32; i++) s += chars[arr[i] % chars.length];
+    } else {
+      for (var i = 0; i < 32; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    var el = document.getElementById("tokOut");
+    el.textContent = s;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(s).then(function(){ el.textContent = s + "  (已复制)"; });
+    }
+  }
+  // ===== 引导用户在 PowerShell 查 IP (离线 HTML 无法直接读系统 IP, 给命令) =====
+  function showIp() {
+    var el = document.getElementById("ipOut");
+    el.textContent = "在 PowerShell 运行: ipconfig | findstr IPv4";
+    alert("查看本机局域网 IP 的方法：\n\n" +
+          "1. 按 Win 键，输入 powershell 回车\n" +
+          "2. 在蓝窗口里粘贴运行：\n   ipconfig | findstr IPv4\n\n" +
+          "3. 找到形如 192.168.x.x 的那一行，就是本机局域网 IP。\n" +
+          "   web 后端在另一台机器时，URL 填 http://该IP:9020");
+  }
+</script>
+</body>
+</html>

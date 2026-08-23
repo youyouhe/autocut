@@ -50,6 +50,7 @@ export interface RenderTask {
   error?: string;
   created?: number;
   progress?: RenderProgress;
+  fallback_reason?: string;   // 自有节点失败回退公共时标注的原因 (琥珀色提示用)
 }
 
 export interface PerceiveResult {
@@ -80,14 +81,85 @@ export interface LocalSendStatus {
 }
 
 // ---------- 基础 ----------
+// 401 时通知 App 跳登录 (jsonFetch 统一拦截, 业务代码无需各自处理)。
+let onAuthExpired: (() => void) | null = null;
+/** App 启动时注册 401 回调, 触发时清 me → LoginGate 重新渲染登录页 */
+export function setAuthExpiredHandler(h: () => void) { onAuthExpired = h; }
+
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, init);
+  if (r.status === 401) {
+    // 会话失效: 通知 App 回登录页 (带新登录后可重试, 这里只负责触发跳转)
+    if (onAuthExpired) onAuthExpired();
+    let msg = '未登录或会话已失效';
+    try { const e = await r.json(); msg = e.error || msg; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
     try { const e = await r.json(); msg = e.error || JSON.stringify(e); } catch { /* ignore */ }
     throw new Error(msg);
   }
   return r.json() as Promise<T>;
+}
+
+// ---------- 认证 ----------
+export interface Me {
+  id: string;
+  username: string;
+  is_admin: boolean;
+  display_name?: string | null;
+}
+
+export function login(username: string, password: string): Promise<Me> {
+  return jsonFetch<{ user: Me }>('/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  }).then(d => d.user);
+}
+
+export function logout(): Promise<{ ok: boolean }> {
+  return jsonFetch<{ ok: boolean }>('/api/auth/logout', { method: 'POST' });
+}
+
+export function getMe(): Promise<Me> {
+  return jsonFetch<{ user: Me }>('/api/auth/me').then(d => {
+    if (!d.user) throw new Error('not logged in');
+    return d.user;
+  });
+}
+
+// ---------- admin 用户管理 ----------
+export interface UserRow {
+  id: string;
+  username: string;
+  is_admin: boolean;
+  display_name?: string | null;
+  created_at: number;
+}
+export function listUsers(): Promise<UserRow[]> {
+  return jsonFetch<{ users: UserRow[] }>('/api/admin/users').then(d => d.users || []);
+}
+export function createUser(username: string, password: string, display_name?: string, is_admin = false): Promise<UserRow> {
+  return jsonFetch<{ user: UserRow }>('/api/admin/users', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, display_name, is_admin }),
+  }).then(d => d.user);
+}
+export function updateUserPassword(id: string, password: string): Promise<{ ok: boolean }> {
+  return jsonFetch(`/api/admin/users/${encodeURIComponent(id)}/password`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+}
+export function deleteUser(id: string): Promise<{ ok: boolean }> {
+  return jsonFetch(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+export function setUserAdmin(id: string, is_admin: boolean): Promise<{ ok: boolean }> {
+  return jsonFetch(`/api/admin/users/${encodeURIComponent(id)}/admin`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_admin }),
+  });
 }
 
 // ---------- 素材 ----------
@@ -105,6 +177,11 @@ export async function upload(files: FileList | File[]): Promise<Asset[]> {
 /** 视频字节 URL (hover 预览 / <video src>) */
 export function serveUrl(path: string): string {
   return `/api/video/serve?path=${encodeURIComponent(path)}`;
+}
+
+/** 轻量缩略图 URL (视频 → ffmpeg 抽帧小 jpg; 图片 → 重定向到 serve). 卡片懒加载用, 非整段视频字节. */
+export function thumbnailUrl(path: string): string {
+  return `/api/assets/thumbnail?path=${encodeURIComponent(path)}`;
 }
 
 export function deleteAsset(name: string): Promise<{ ok: boolean; error?: string }> {
@@ -216,6 +293,75 @@ export function saveDraft(draft_id: string): Promise<{ success: boolean; error?:
   });
 }
 
+/**
+ * 手动把一个素材追加到激活草稿 (AssetPanel 的"加到草稿"按钮).
+ * 后端包装端点: 路径解析 + 自动接龙(video/image)+ 落盘 都在服务端处理, 前端只传路径与类型.
+ * 冷草稿 (服务重启后 cache-miss) 后端会返回明确错误, 不会静默新建空草稿.
+ */
+export function addAssetToDraft(
+  draft_id: string,
+  asset_path: string,
+  asset_type: 'video' | 'audio' | 'image',
+  opts?: { start?: number; end?: number },
+): Promise<{ ok: boolean; duplicate?: boolean; note?: string; material_name?: string; track_name?: string; target_start?: number; start?: number; error?: string }> {
+  return jsonFetch(`/api/draft/${encodeURIComponent(draft_id)}/add-asset`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ asset_path, asset_type, ...opts }),
+  });
+}
+
+// ---------- 时间线 (只读草稿结构) ----------
+// draft_content.json 关键字段 (来自 pyJianYingDraft: timerange 微秒, track.type, segment.material_id→materials)
+export interface Timerange { start: number; duration: number }   // 微秒 (SEC = 1_000_000)
+
+export interface TimelineSegment {
+  id: string;
+  material_id: string;
+  target_timerange?: Timerange;   // 轨道时间轴位置 (微秒)
+  source_timerange?: Timerange;   // 素材原始时间轴位置
+  speed?: number;
+  volume?: number;
+  type?: string;                  // video/audio/text/sticker/... (取自所属 track)
+  // 文本素材特有 (从 materials.texts 匹配)
+  text_content?: string;
+  // 视频/音频素材特有
+  material_path?: string;         // 用于 serveUrl 取缩略图
+  material_name?: string;
+}
+
+export interface TimelineTrack {
+  id: string;
+  type: string;                   // video/audio/text/sticker/effect/filter
+  name: string;
+  segments: TimelineSegment[];
+}
+
+export interface DraftContent {
+  duration: number;               // 微秒
+  fps: number;
+  tracks: TimelineTrack[];
+  materials: {
+    videos?: any[]; audios?: any[]; texts?: any[]; stickers?: any[];
+    [k: string]: any[] | undefined;
+  };
+}
+
+interface QueryScriptResult { success: boolean; output: string; error: string; source?: string }
+
+/**
+ * 拉取草稿 draft_content.json (只读时间线用).
+ * 走 /api/draft/timeline/<id> (GET): 优先取 VectCutAPI 内存缓存 (query_script_impl),
+ * 缓存 miss 直接读磁盘 draft_content.json 兜底 —— 冷草稿 (服务重启后未操作过的) 也能看.
+ * 旧 /query_script 只读内存缓存, 服务重启后所有草稿都 cache-miss, 故改走此端点.
+ */
+export async function queryScript(draft_id: string, force_update = false): Promise<DraftContent> {
+  const r = await jsonFetch<QueryScriptResult>(
+    `/api/draft/timeline/${encodeURIComponent(draft_id)}${force_update ? '?force_update=1' : ''}`,
+  );
+  if (!r.success || !r.output) throw new Error(r.error || '查询草稿脚本失败');
+  return JSON.parse(r.output) as DraftContent;   // output 是 JSON 字符串, 需解析
+}
+
 // ---------- 模板 ----------
 export interface TemplateInfo {
   file: string;
@@ -256,6 +402,39 @@ export function renderList(): Promise<RenderTask[]> {
 
 export function downloadUrl(task_id: string): string {
   return `/render/download/${encodeURIComponent(task_id)}`;
+}
+
+// ---------- per-user 自定义 Render 节点配置 ----------
+// 每个用户自助配置自己的 render_service (URL + X-Render-Token): 渲染优先走自己的 CapCut,
+// 提交失败/未配置时回退公共节点. token 在 GET 接口脱敏 (仅末 4 位).
+export interface RenderConfig {
+  url: string;           // 已配置的 render_service URL (未配置为空串)
+  token: string;         // 脱敏 token (如 ****ab12); 未配置为空串
+  configured: boolean;   // 用户是否配置了自有节点
+  public_url?: string;   // 公共节点 URL (兜底用, 供 UI 提示展示)
+}
+export function getRenderConfig(): Promise<RenderConfig> {
+  return jsonFetch<RenderConfig>('/api/render-config');
+}
+export function saveRenderConfig(url: string, token?: string): Promise<RenderConfig> {
+  return jsonFetch<RenderConfig>('/api/render-config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, token }),
+  });
+}
+export interface RenderConfigTestResult {
+  ok: boolean;
+  detail?: string;
+  videos_dir?: string;
+  desktops?: string[];
+  error?: string;
+}
+/** 测试连接: 探活用户配置的 render_service 的 /health. token 空=用已存 token. */
+export function testRenderConfig(url: string, token?: string): Promise<RenderConfigTestResult> {
+  return jsonFetch<RenderConfigTestResult>('/api/render-config/test', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, token }),
+  });
 }
 
 // ---------- 对话 (SSE) ----------
@@ -324,8 +503,9 @@ export interface Conversation {
   updated_at: number;
 }
 
-export function listConversations(): Promise<ConversationSummary[]> {
-  return jsonFetch<ConversationSummary[]>('/api/chat/conversations');
+export function listConversations(draftId?: string | null): Promise<ConversationSummary[]> {
+  const q = draftId ? `?draft_id=${encodeURIComponent(draftId)}` : '';
+  return jsonFetch<ConversationSummary[]>(`/api/chat/conversations${q}`);
 }
 export function createConversation(draft_id?: string | null): Promise<{ id: string }> {
   return jsonFetch('/api/chat/conversations', {
@@ -361,7 +541,7 @@ export interface SettingField {
   key: string;
   label: string;
   secret: boolean;
-  group: 'llm' | 'asr' | 'analysis';
+  group: 'llm' | 'asr' | 'analysis' | 'tools';
   type: 'text' | 'secret' | 'bool';
   value: string | boolean;   // secret 字段为脱敏值 (如 ****ab12), bool 字段为 true/false, 仅供展示
   configured: boolean;
@@ -375,8 +555,8 @@ export function saveSettings(values: Record<string, string | boolean>): Promise<
     body: JSON.stringify(values),
   });
 }
-export interface TestResult { ok: boolean; error?: string; model?: string; status?: number }
-export function testSetting(target: 'llm' | 'asr', overrides: Record<string, string | boolean>): Promise<TestResult> {
+export interface TestResult { ok: boolean; error?: string; model?: string; status?: number; detail?: string }
+export function testSetting(target: 'llm' | 'asr' | 'tools', overrides: Record<string, string | boolean>): Promise<TestResult> {
   return jsonFetch<TestResult>('/api/settings/test', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ target, ...overrides }),

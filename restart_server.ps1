@@ -4,8 +4,8 @@ $ErrorActionPreference = 'SilentlyContinue'
 $py = 'C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe'
 $wd = 'C:\Users\Administrator\autocut'
 
-# 端口从 .env 读 (没有则用 config 默认 9002)
-$port = 9002
+# 端口从 .env 读 (没有则用 config 默认 9010)
+$port = 9010
 Get-Content (Join-Path $wd '.env') | ForEach-Object {
     if ($_ -match '^RENDER_SERVER_PORT=(\d+)') { $port = $Matches[1] }
 }
