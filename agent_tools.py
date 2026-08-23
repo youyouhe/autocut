@@ -1005,5 +1005,6 @@ def build_tools(ctx: ToolContext):
             description=fn.get('description', ''),
             params_json_schema=fn.get('parameters') or {'type': 'object', 'properties': {}},
             on_invoke_tool=_make_invoker(name),
+            strict_json_schema=False,  # 旧 schema 未按 strict 规范把全部字段列入 required
         ))
     return tools

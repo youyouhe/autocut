@@ -1734,7 +1734,11 @@ def api_chat():
             try:
                 produced = await _run_once(agent, user_input)
             except Exception as e:
-                q.put(('error', {'text': f'Agent 运行失败: {e}'}))
+                from agents.exceptions import InputGuardrailTripwireTriggered
+                if isinstance(e, InputGuardrailTripwireTriggered):
+                    q.put(('error', {'text': '（该请求被输入守卫拦截：消息超长或包含疑似提示注入/越权内容，请调整后再发）'}))
+                else:
+                    q.put(('error', {'text': f'Agent 运行失败: {e}'}))
                 return
             if produced:
                 return
