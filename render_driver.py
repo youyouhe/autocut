@@ -1282,6 +1282,21 @@ class Driver:
             log('点导出按钮 (尝试%d)' % (attempt + 1))
             self.click_main_button(['导出'], caps['export']['lx'], caps['export']['ly'])
             new_show = self.wait_new_window(base_show, timeout=8)
+            if not new_show:
+                # 弹窗检测兜底: showCount 可能漏检 QML 弹窗 (实测存在), 直接找 modal 里
+                # 的确认按钮 —— 找得到 = 弹窗其实已经打开 (后续重试点击反而会打在遮罩上
+                # 把弹窗关掉, 造成"点了没反应"的假象 + 截图永远是正常编辑器).
+                for _ in range(6):
+                    mb = None
+                    try:
+                        mb = self.script.exports_sync.findmodalbutton(json.dumps(['导出'], ensure_ascii=False))
+                    except Exception:
+                        pass
+                    if mb and mb.get('ok'):
+                        log('  ✓ showCount 未变但 modal 确认按钮已出现 (hook 漏检弹窗, 按已打开处理)')
+                        new_show = (base_show or 0) + 1
+                        break
+                    time.sleep(1)
             if new_show:
                 log('  ✓ 导出窗口出现 (showCount %d->%d)' % (base_show, new_show))
             else:
