@@ -7,6 +7,7 @@ import requests
 from agents import Runner  # OpenAI Agents SDK (聊天 Agent 运行时)
 _CHAT_LOCKS = {}  # conversation_id -> Lock: 同一会话串行, 防并发整体覆盖丢轮次
 _CHAT_CANCELS = {}  # conversation_id -> threading.Event: 手动停止进行中的一轮
+_CHAT_LOCK_TIMES = {}  # conversation_id -> 锁获取时间: 卡死检测 (10min 强制接管)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 try: sys.stdout.reconfigure(encoding='utf-8')
@@ -1730,7 +1731,15 @@ def api_chat():
     # 会话级锁: 同一会话串行 (旧行为是并发整体覆盖 save_messages, 后完成者赢会丢前一轮)
     _lk = _CHAT_LOCKS.setdefault(conversation_id, threading.Lock())
     if not _lk.acquire(blocking=False):
-        return jsonify({'error': '该会话正在处理上一条消息, 请等它结束再发'}), 409
+        # 卡死兜底: 锁被持有超过 10 分钟 (异常路径未释放) → 换新锁强制接管, 不让会话永久 409
+        _held_since = _CHAT_LOCK_TIMES.get(conversation_id)
+        if _held_since and time.time() - _held_since > 600:
+            print('[chat] 会话 %s 锁卡死 %.0fs, 强制接管' % (conversation_id[:8], time.time() - _held_since), flush=True)
+            _lk = _CHAT_LOCKS[conversation_id] = threading.Lock()
+            _lk.acquire()
+        else:
+            return jsonify({'error': '该会话正在处理上一条消息, 请等它结束再发'}), 409
+    _CHAT_LOCK_TIMES[conversation_id] = time.time()
 
     # 旧会话历史迁移 (幂等): chats.db 历史 → SDK session items
     if prior_messages:
@@ -1822,6 +1831,21 @@ def api_chat():
             user_input = '（系统提示: 上一轮没有回复内容, 请继续当前任务; 若任务已完成, 请给出总结）'
         q.put(('text', {'text': '（模型连续返回空内容, 本轮中断 —— 发送「继续」我会接着推进）'}))
 
+    _released = {'done': False}
+    _acquired_at = time.time()
+
+    def _release_lock():
+        """幂等释放会话锁 + 清理取消标志. generate() 正常结束与 _worker 兜底都调 ——
+        客户端提前断开 (SSE 被掐) 时 generator 可能不再执行 finally, 由 worker 兜底."""
+        if _released['done']:
+            return
+        _released['done'] = True
+        _CHAT_CANCELS.pop(conversation_id, None)
+        try:
+            _lk.release()
+        except RuntimeError:
+            pass
+
     def _worker():
         import asyncio
         try:
@@ -1830,6 +1854,7 @@ def api_chat():
             q.put(('error', {'text': f'Agent 运行异常: {e}'}))
         finally:
             q.put(('done', None))
+            _release_lock()   # 兜底: 客户端已断开时 generator 不会跑 finally
 
     def generate():
         # 首帧: 会话 id (新建会话时前端靠它拿到 id)
@@ -1873,8 +1898,7 @@ def api_chat():
         except Exception as e:
             print('[chat] 会话保存失败: %s' % e, flush=True)
         finally:
-            _CHAT_CANCELS.pop(conversation_id, None)
-            _lk.release()
+            _release_lock()
         yield "data: [DONE]\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
