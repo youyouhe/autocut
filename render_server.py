@@ -267,6 +267,9 @@ def api_render_nodes():
     now = time.time()
     out = []
     for nid, n in _RENDER_NODES.items():
+        # 只展示 24h 内心跳过的节点 (测试残留/久远下线的节点不永久挂列表)
+        if now - n.get('last_heartbeat', 0) > 86400:
+            continue
         d = dict(n)
         d['online'] = (now - n.get('last_heartbeat', 0)) < _NODE_STALE_SEC
         d['stale_seconds'] = int(now - n.get('last_heartbeat', 0))
