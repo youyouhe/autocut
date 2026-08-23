@@ -22,3 +22,4 @@ webrtcvad-wheels>=2.0.14   # 本地语音活动检测, ASR 前先判断音轨是
 # (没 GPU 的机器装 CPU 版一样能跑, 只是慢; 权重首次调用自动从 torchvision 官方 CDN 下 ~45MB, 不用手动找模型文件)
 torch>=2.0.0
 torchvision>=0.15.0
+openai-agents
