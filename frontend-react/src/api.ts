@@ -28,6 +28,9 @@ export interface Draft {
   cover_url: string | null;
   size_bytes?: number;
   type?: string;
+  mp4_path?: string;      // 最新渲染成片 (有值时卡片提供预览/下载)
+  mp4_name?: string;
+  mp4_size?: number;
 }
 
 export type RenderStatus = 'queued' | 'rendering' | 'done' | 'error';

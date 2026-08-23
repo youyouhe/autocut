@@ -1135,6 +1135,23 @@ def api_list_drafts():
     # 多租户: 只返回本用户的草稿 (admin 可见全部; 无前缀 legacy/剪映原生草稿仅 admin 可见)。
     uid = current_user_id()
     drafts = [d for d in drafts if _draft_owned(d.get('folder'), uid)]
+
+    # 附加最新渲染成片: 按 draft_name 匹配 done 任务, 取最近一次的 mp4 (预览/下载入口).
+    try:
+        _done = {}
+        _tasks = task_store.load_all(user_id=uid)
+        _tasks = _tasks.values() if isinstance(_tasks, dict) else _tasks
+        for t in _tasks:
+        for d in drafts:
+            t = _done.get(d.get('folder')) or _done.get(d.get('name'))
+            if t:
+                d['mp4_path'] = t['mp4_path']
+                d['mp4_name'] = t.get('mp4_name', '')
+                d['mp4_size'] = t.get('mp4_size') or (
+                    os.path.getsize(t['mp4_path']) if os.path.isfile(t['mp4_path']) else 0)
+    except Exception as e:
+        print('[drafts] 附加渲染成片失败: %s' % e, flush=True)
+
     # 按修改时间倒序
     drafts.sort(key=lambda x: x.get('modified', 0), reverse=True)
     return jsonify(drafts)

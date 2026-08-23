@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Clock, Calendar, Trash2, Video, RefreshCw, Loader2, Plus, MessageSquare, Film, Star } from 'lucide-react';
+import { Clock, Calendar, Trash2, Video, RefreshCw, Loader2, Plus, MessageSquare, Film, Star, Play, Download, ChevronDown, ChevronUp } from 'lucide-react';
 import * as api from '../api';
 import type { Draft } from '../api';
 
@@ -14,6 +14,7 @@ interface Props {
 
 export default function DraftPanel({ draftId, onRendered, onCreated, onOpenChat, onOpenTimeline, setDraftId }: Props) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [rendering, setRendering] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -149,12 +150,36 @@ export default function DraftPanel({ draftId, onRendered, onCreated, onOpenChat,
                       <Film size={12} strokeWidth={2} /> Timeline
                     </button>
                   </div>
+                  {d.mp4_path && (
+                    <button onClick={(e) => { e.stopPropagation(); setPreviewId(previewId === d.id ? null : d.id); }}
+                      className="flex items-center gap-1.5 text-[10px] uppercase tracking-widest font-bold opacity-70 hover:opacity-100 hover:text-emerald-700 transition-colors"
+                      title="预览/下载该草稿最新渲染成片">
+                      {previewId === d.id ? <ChevronUp size={12} strokeWidth={2} /> : <Play size={12} strokeWidth={2} />}
+                      成片
+                    </button>
+                  )}
                   <button onClick={(e) => { e.stopPropagation(); handleDelete(d.folder); }}
                     className="flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold opacity-40 hover:opacity-100 hover:text-red-700 transition-colors"
                     title="Delete Draft">
                     <Trash2 size={12} strokeWidth={2} /> Delete
                   </button>
                 </div>
+                {/* 最新渲染成片: 就地展开预览 + 下载 */}
+                {d.mp4_path && previewId === d.id && (
+                  <div className="mt-4 pt-4 border-t border-[#121212]/10 space-y-3" onClick={(e) => e.stopPropagation()}>
+                    <video className="w-full bg-[#121212]" src={api.serveUrl(d.mp4_path)} controls
+                      preload="metadata" playsInline />
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] uppercase tracking-widest opacity-50 truncate" title={d.mp4_name}>
+                        {d.mp4_name} {d.mp4_size ? `· ${(d.mp4_size / 1048576).toFixed(1)} MB` : ''}
+                      </span>
+                      <a href={api.serveUrl(d.mp4_path)} download={d.mp4_name || 'render.mp4'}
+                        className="flex items-center gap-1.5 px-3 py-1.5 border border-[#121212]/20 text-[#121212] hover:bg-[#121212]/5 transition-colors text-[10px] uppercase tracking-widest font-bold">
+                        <Download size={12} strokeWidth={2} /> Download
+                      </a>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           ))}
