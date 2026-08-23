@@ -155,32 +155,37 @@ def inject_draft(src_draft_dir, new_name=None):
     return dst
 
 def capture_failure_screen(tag='fail'):
-    """失败诊断: 截一张目标桌面 (隔离桌面) 的全屏图, 存到渲染节点工作目录 shots/.
-    隔离桌面里的画面平时完全不可见 (主桌面看不到), 出问题时只能靠截图判断
-    "导出窗口到底弹没弹/点了哪里". 用 GDI BitBlt, 无第三方依赖."""
+    """失败诊断: 截取剪映窗口画面 (PrintWindow 自渲染, 跨桌面可用), 存 shots/.
+    注: BitBlt 截隔离桌面只能得到纯黑 (DWM/GPU 合成窗口不在屏幕 DC 里, 实测),
+    PrintWindow(PW_RENDERFULLCONTENT) 让窗口自己画到我们的 DC, 才截得到."""
     try:
         import ctypes
         from ctypes import wintypes
         user32 = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
         with _on_target_desktop():
-            hdc = user32.GetDC(None)
-            if not hdc:
+            hwnd = find_jy_hwnd()
+            if not hwnd:
+                log('截图失败: 找不到剪映窗口')
                 return None
-            w = user32.GetSystemMetrics(0)
-            h = user32.GetSystemMetrics(1)
+            r = wintypes.RECT(); user32.GetWindowRect(hwnd, ctypes.byref(r))
+            w, h = r.right - r.left, r.bottom - r.top
+            if w <= 0 or h <= 0:
+                log('截图失败: 窗口尺寸异常 %dx%d' % (w, h))
+                return None
+            hdc = user32.GetDC(None)
             mdc = gdi32.CreateCompatibleDC(hdc)
             bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
             gdi32.SelectObject(mdc, bmp)
-            gdi32.BitBlt(mdc, 0, 0, w, h, hdc, 0, 0, 0x00CC0020)  # SRCCOPY
+            # PW_RENDERFULLCONTENT(2): 让 DWM 合成内容也渲染 (GPU 窗口必须)
+            ok = user32.PrintWindow(hwnd, mdc, 2)
             shots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'shots')
             os.makedirs(shots_dir, exist_ok=True)
-            path = os.path.join(shots_dir, 'shot_%s_%s.png' % (
+            path = os.path.join(shots_dir, 'shot_%s_%s.bmp' % (
                 time.strftime('%H%M%S'), tag))
-            # BMP 直写 (无 PNG 编码器依赖), 后缀仍 .png 但实为 BMP —— 查看器都能开
             _save_bmp(mdc, bmp, path, w, h)
             gdi32.DeleteObject(bmp); gdi32.DeleteDC(mdc); user32.ReleaseDC(None, hdc)
-            log('已截图: %s' % path)
+            log('已截图(PrintWindow ok=%s, %dx%d): %s' % (ok, w, h, path))
             return path
     except Exception as e:
         log('截图失败: %s' % e)
