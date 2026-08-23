@@ -632,7 +632,7 @@ def execute_tool(name, args, ctx):
         track_name = args.get('track_name') or 'video_main'
         target_start = args.get('target_start')
         if target_start is None:
-            target_start = rs._track_end_seconds(did, track_name)
+            target_start = rs._track_end_seconds(did, track_name, user_id=ctx.uid)
         d = {'draft_id': did, 'video_url': rs._resolve_asset_url(args.get('url',''), uid=ctx.uid),
              'track_name': track_name, 'target_start': target_start}
         if args.get('relative_index') is not None: d['relative_index'] = args['relative_index']
@@ -703,7 +703,7 @@ def execute_tool(name, args, ctx):
         track_name = args.get('track_name') or 'image_main'
         start = args.get('start')
         if start is None:
-            start = rs._track_end_seconds(did, track_name)
+            start = rs._track_end_seconds(did, track_name, user_id=ctx.uid)
         end = args.get('end')
         if end is None:
             end = start + 3   # 没给时长默认展示 3 秒

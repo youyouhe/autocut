@@ -1969,11 +1969,17 @@ def _resolve_asset_url(u, uid=None):
     return u
 
 
-def _track_end_seconds(draft_id, track_name):
+def _track_end_seconds(draft_id, track_name, user_id=None):
     """查草稿里某条轨道当前已经铺到多少秒 —— add_video 不传 target_start 时用这个自动
     接龙, 不用 agent 自己心算已加了多少段/每段多长(算错了同一时间点会撞车覆盖).
-    模块级 (原为 generate() 闭包; 提到模块级以便 /api/draft/<id>/add-asset 复用)."""
-    r = _post_internal('query_script', {'draft_id': draft_id}, user_id=current_user_id())
+    user_id 显式传入 (Agent 工具在请求外的工作线程跑, 不能读 session);
+    不传时回退请求上下文 (add-asset 端点内调用)."""
+    if not user_id:
+        try:
+            user_id = current_user_id()
+        except RuntimeError:  # 请求上下文外 (worker 线程) 且未显式传 uid
+            user_id = None
+    r = _post_internal('query_script', {'draft_id': draft_id}, user_id=user_id)
     try:
         script = json.loads(r.get('output') or '{}')
         track = next((t for t in script.get('tracks', []) if t.get('name') == track_name), None)
