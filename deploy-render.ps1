@@ -1,20 +1,21 @@
-# deploy-render.ps1 — Sync render-node files from source dir to C:\autocut-render-node
+# deploy-render.ps1 — Sync render-node files from source dir to the portable node package
 # Usage (from source dir, e.g. C:\Users\Administrator\autocut):
 #   powershell -ExecutionPolicy Bypass -File deploy-render.ps1
 #
-# Minimal file set required by render_service:
-#   render_service.py / render_driver.py / render_monitor.py / upgrade_watchdog.py
-#   config.py / task_store.py  (directly imported by render_service)
-#   requirements.txt           (for first-time dependency install)
-#   .env                       (render-side config: JY_APP_BASE / DESKTOP_NAMES / RENDER_SERVICE_TOKEN;
-#                               NOT overwritten if target already has one)
-#   calib.json                 (coordinate calibration; overwritten with latest if present)
+# IMPORTANT: C:\autocut-render-node is a PORTABLE package (built by portable/build.py):
+#   - bundled python\ + ffmpeg\, service code runs from the app\ subdirectory
+#   - start.bat launches app\render_service.py with the bundled python
+#   => code files must be deployed to C:\autocut-render-node\app  (NOT the package root!)
+#   => .env is generated from config.env by start.bat — never touch it here
 
 $ErrorActionPreference = 'Stop'
 $src = $PSScriptRoot
-$dst = 'C:\autocut-render-node'
+$dst = 'C:\autocut-render-node\app'
 
-if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Path $dst | Out-Null }
+if (-not (Test-Path $dst)) {
+    Write-Error "Target $dst not found. Is this really the portable render node? (expected app\ subdirectory)"
+    exit 1
+}
 
 $files = @(
     'render_service.py',
@@ -22,36 +23,30 @@ $files = @(
     'render_monitor.py',
     'upgrade_watchdog.py',
     'config.py',
-    'task_store.py',
-    'requirements.txt'
+    'task_store.py'
 )
 
 foreach ($f in $files) {
     $s = Join-Path $src $f
     if (-not (Test-Path $s)) { Write-Warning "MISSING in source: $f (skipped)"; continue }
     Copy-Item $s -Destination $dst -Force
-    Write-Host "UPDATED  $f"
+    Write-Host "UPDATED  app\$f"
 }
 
-# .env: keep existing target config (render-machine specific); copy only on first deploy
-$dstEnv = Join-Path $dst '.env'
-if (-not (Test-Path $dstEnv)) {
-    Copy-Item (Join-Path $src '.env') -Destination $dstEnv -ErrorAction SilentlyContinue
-    if ($?) { Write-Host 'COPIED  .env (first deploy)' }
-} else {
-    Write-Host 'KEPT    .env (target config preserved, not overwritten)'
-}
-
-# Calibration: sync latest if present
+# Calibration: sync latest if present (root of package, next to calibrate.bat)
 $calib = Join-Path $src 'calib.json'
 if (Test-Path $calib) {
-    Copy-Item $calib -Destination $dst -Force
+    Copy-Item $calib -Destination 'C:\autocut-render-node\calib.json' -Force
     Write-Host 'UPDATED  calib.json'
 } else {
     Write-Host 'SKIPPED  calib.json (not found in source)'
 }
 
 Write-Host ''
+Write-Host 'NOTE: files previously copied to the package ROOT by an older version of this'
+Write-Host '      script are unused (service runs from app\). You may delete them manually.'
+Write-Host ''
 Write-Host 'DEPLOY DONE. Now restart the render service:'
-Write-Host '  1. Kill pythonw / render_service process in Task Manager'
-Write-Host '  2. Run start_render_service.bat (or: pythonw render_service.py in C:\autocut-render-node)'
+Write-Host '  1. Run stop.bat  (or close the render_service console window)'
+Write-Host '  2. Run start.bat'
+Write-Host '  3. Health check: http://127.0.0.1:9020/health'
