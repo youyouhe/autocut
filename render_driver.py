@@ -785,6 +785,12 @@ class Driver:
                 _activate_hwnd(hwnd)
             except Exception as e:
                 log('  激活弹窗 hwnd 失败: %s' % e)
+            # 激活吞噬防护 (同 click_main_button): 先点弹窗空白处让激活吞噬吃掉
+            try:
+                _post_click_hwnd(hwnd, 30, 30)
+                time.sleep(0.3)
+            except Exception:
+                pass
             lx, ly = btn['ax'] + btn['w'] / 2, btn['ay'] + btn['h'] / 2
             r = _post_click_hwnd(hwnd, lx, ly)
             log('  findmodalbutton%s -> btn=%s post click(local=%.0f,%.0f)=%s' %
@@ -818,6 +824,14 @@ class Driver:
                 _activate_hwnd(hwnd)
             except Exception as e:
                 log('  激活主窗口 hwnd 失败: %s' % e)
+            # 激活吞噬防护: 隔离桌面下 SetForegroundWindow 静默失败, 窗口未真正激活时
+            # 第一次点击只被用来"点活"窗口而不触发按钮逻辑 (实测截图确认坐标落在导出
+            # 按钮上但弹窗不出现). 先往空白标题栏丢一次无害点击让激活吞噬吃掉, 再点真按钮.
+            try:
+                _post_click_hwnd(hwnd, 600, 15)   # 标题栏中部空白处 (避开左侧"剪辑"菜单和右侧按钮)
+                time.sleep(0.3)
+            except Exception:
+                pass
             lx, ly = btn['ax'] + btn['w'] / 2, btn['ay'] + btn['h'] / 2
             r = _post_click_hwnd(hwnd, lx, ly)
             log('  findmainbutton%s -> btn=%s post click(local=%.0f,%.0f)=%s' %
