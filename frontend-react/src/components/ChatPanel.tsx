@@ -443,10 +443,22 @@ export default function ChatPanel({ assets, draftId, setDraftId, conversationId,
               className="flex-1 bg-transparent border-none focus:ring-0 resize-none max-h-32 min-h-[48px] p-3 text-[#121212] placeholder:text-[#121212]/30 outline-none font-light"
               rows={1}
             />
-            <button onClick={handleSend} disabled={!input.trim() || isTyping}
-              className="px-6 py-3 h-[48px] bg-[#121212] text-[#FDFCF8] hover:bg-[#121212]/80 disabled:opacity-50 transition-colors flex-shrink-0 uppercase tracking-widest text-[10px] font-bold">
-              Submit
-            </button>
+            {isTyping ? (
+              <button onClick={async () => {
+                if (!conversationId) return;
+                try { await fetch(`/api/chat/${conversationId}/stop`, { method: 'POST' }); }
+                catch (err) { console.error(err); }
+              }}
+                title="停止本轮 Agent 运行 (已完成部分保留)"
+                className="px-6 py-3 h-[48px] bg-red-700 text-white hover:bg-red-800 transition-colors flex-shrink-0 uppercase tracking-widest text-[10px] font-bold flex items-center gap-2">
+                <SquareTerminal size={12} strokeWidth={2} /> Stop
+              </button>
+            ) : (
+              <button onClick={handleSend} disabled={!input.trim() || isTyping}
+                className="px-6 py-3 h-[48px] bg-[#121212] text-[#FDFCF8] hover:bg-[#121212]/80 disabled:opacity-50 transition-colors flex-shrink-0 uppercase tracking-widest text-[10px] font-bold">
+                Submit
+              </button>
+            )}
           </div>
         </div>
       </div>

@@ -6,6 +6,7 @@ import requests
 
 from agents import Runner  # OpenAI Agents SDK (聊天 Agent 运行时)
 _CHAT_LOCKS = {}  # conversation_id -> Lock: 同一会话串行, 防并发整体覆盖丢轮次
+_CHAT_CANCELS = {}  # conversation_id -> threading.Event: 手动停止进行中的一轮
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 try: sys.stdout.reconfigure(encoding='utf-8')
@@ -1705,11 +1706,17 @@ def api_chat():
     turn_log.append({'role': 'user', 'content': message})
     run_state = {'text_count': 0, 'tool_count': 0}   # 空响应兜底用
 
+    # 手动停止: /api/chat/<cid>/stop 置位事件, 事件循环与 SSE 出队侧都检查
+    cancel = threading.Event()
+    _CHAT_CANCELS[conversation_id] = cancel
+
     async def _run_once(agent, user_input):
         """单次 SDK 流式 run: 把事件翻译进队列. 返回是否产出文本."""
         produced = False
         result = Runner.run_streamed(agent, user_input, session=session, max_turns=200)
         async for ev in result.stream_events():
+            if cancel.is_set():
+                break   # 用户点了停止: 不再消费事件, run 自然收尾
             if ev.type == 'run_item_stream_event':
                 item = ev.item
                 if item.type == 'message_output_item':
@@ -1742,6 +1749,8 @@ def api_chat():
                 return
             if produced:
                 return
+            if cancel.is_set():
+                return   # 用户点了停止, 不再续跑
             if run_state['tool_count'] == 0 and attempt == 0:
                 # 一次工具都没调也没文本 —— 模型彻底空转, 直接提示
                 q.put(('text', {'text': '（模型返回空内容, 请重发或换个说法）'}))
@@ -1764,8 +1773,16 @@ def api_chat():
         import threading as _th
         t = _th.Thread(target=_worker, daemon=True)
         t.start()
+        stopped = False
         while True:
-            kind, payload = q.get()
+            try:
+                item = q.get(timeout=0.5)
+            except Exception:  # queue.Empty — 超时窗口里检查停止标志
+                if cancel.is_set():
+                    stopped = True
+                    break
+                continue
+            kind, payload = item
             if kind == 'done':
                 break
             if kind == 'text':
@@ -1784,15 +1801,30 @@ def api_chat():
             elif kind == 'error':
                 yield sse(payload)
                 turn_log.append({'role': 'assistant', 'content': payload['text']})
+        if stopped:
+            yield sse({'text': '（已手动停止本轮 — 已完成的部分已保存）'})
+            turn_log.append({'role': 'assistant', 'content': '（已手动停止本轮）'})
         try:
             chat_store.save_messages(conversation_id, turn_log, ctx.draft_id or draft_id, user_id=uid)
         except Exception as e:
             print('[chat] 会话保存失败: %s' % e, flush=True)
         finally:
+            _CHAT_CANCELS.pop(conversation_id, None)
             _lk.release()
         yield "data: [DONE]\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+@app.route('/api/chat/<cid>/stop', methods=['POST'])
+@login_required
+def api_chat_stop(cid):
+    """手动停止该会话正在进行的这轮 Agent 运行 (已完成部分照常落库)."""
+    ev = _CHAT_CANCELS.get(cid)
+    if ev is None:
+        return jsonify({'ok': False, 'error': '该会话当前没有进行中的运行'}), 404
+    ev.set()
+    return jsonify({'ok': True})
 
 
 @app.route('/api/chat/conversations', methods=['GET'])

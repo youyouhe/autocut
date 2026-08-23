@@ -450,7 +450,7 @@ def execute_tool(name, args, ctx):
             ftype = 'video' if ext in ('.mp4','.mov','.avi','.mkv') else \
                     'image' if ext in ('.jpg','.png','.jpeg') else \
                     'audio' if ext in ('.mp3','.wav','.aac') else 'other'
-            analysis = _find_analysis(path)
+            analysis = _find_analysis(path, ctx.uid)
             analyzed = '已分析' if analysis else '未分析'
             entry = f'{fname} ({ftype}, {analyzed}'
             tags = analysis.get('tags') if analysis else None
@@ -480,7 +480,7 @@ def execute_tool(name, args, ctx):
                 continue
             hit = [k for k in keywords if any(k in t for t in m['tags'])]
             matches.append({'name': m['name'], 'tags': m['tags'], 'matched_keywords': hit})
-        result = {'matches': matches, 'total_analyzed_scanned': sum(1 for p in ctx.asset_paths if _find_analysis(p))}
+        result = {'matches': matches, 'total_analyzed_scanned': sum(1 for p in ctx.asset_paths if _find_analysis(p, ctx.uid))}
 
     elif name == 'search_assets':
         query = str(args.get('query') or '').strip()
@@ -502,7 +502,7 @@ def execute_tool(name, args, ctx):
         path = next((p for p in ctx.asset_paths if fname in p), None)
         if not path:
             return json.dumps({'error': f'未找到资源: {fname}'}, ensure_ascii=False)
-        analysis = _find_analysis(path)
+        analysis = _find_analysis(path, ctx.uid)
         if not analysis:
             return json.dumps({'error': f'{fname} 尚未分析，请调用 analyze_resource 先分析'}, ensure_ascii=False)
         detail = {'filename': fname, 'path': path}
@@ -528,7 +528,7 @@ def execute_tool(name, args, ctx):
         path = next((p for p in ctx.asset_paths if fname in p), None)
         if not path:
             return json.dumps({'error': f'未找到: {fname}'}, ensure_ascii=False)
-        analysis = _find_analysis(path)
+        analysis = _find_analysis(path, ctx.uid)
         if not analysis:
             return json.dumps({'error': f'{fname} 尚未分析，请调用 analyze_resource 先分析'}, ensure_ascii=False)
         audio = analysis.get('audio', {})
