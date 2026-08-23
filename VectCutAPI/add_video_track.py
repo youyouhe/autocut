@@ -79,25 +79,24 @@ def add_video_track(
         height=height
     )
     
-    # Check if video track exists, if not, add a default video track
-    try:
-        script.get_track(draft.Track_type.video, track_name=None)
-    except exceptions.TrackNotFound:
-        script.add_track(draft.Track_type.video, relative_index=0)
-    except NameError:
-        # If multiple video tracks exist (NameError), do nothing
-        pass
-
-    # Add video track (only when track doesn't exist)
+    # 轨道策略: 指定 track_name 时只确保该命名轨道存在 (不再无条件先建默认轨道 ——
+    # 否则首个 add_video 会多出一条空 'video' 轨, 用户实测加 1 个视频出现 2 条轨道).
+    # 未指定 track_name 时才保证默认轨道存在 (且不重复 add).
     if track_name is not None:
         try:
-            imported_track=script.get_imported_track(draft.Track_type.video, name=track_name)
+            script.get_imported_track(draft.Track_type.video, name=track_name)
             # If no exception is thrown, the track already exists
         except exceptions.TrackNotFound:
             # Track doesn't exist, create new track
             script.add_track(draft.Track_type.video, track_name=track_name, relative_index=relative_index)
     else:
-        script.add_track(draft.Track_type.video, relative_index=relative_index)
+        try:
+            script.get_track(draft.Track_type.video, track_name=None)
+        except exceptions.TrackNotFound:
+            script.add_track(draft.Track_type.video, relative_index=relative_index)
+        except NameError:
+            # If multiple video tracks exist (NameError), do nothing
+            pass
     
     # If duration parameter is passed, use it preferentially; otherwise use default duration of 0 seconds, and get the real duration when downloading the draft
     if duration is not None:

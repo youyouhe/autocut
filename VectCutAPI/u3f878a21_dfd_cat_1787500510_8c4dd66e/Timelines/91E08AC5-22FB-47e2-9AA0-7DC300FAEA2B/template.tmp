@@ -33,7 +33,7 @@
     },
     "cover": null,
     "create_time": 0,
-    "duration": 3000000,
+    "duration": 89288122,
     "extra_info": null,
     "fps": 30,
     "free_render_index_mode_on": false,
@@ -92,9 +92,9 @@
         "speeds": [
             {
                 "curve_speed": null,
-                "id": "74b6a449866e422fb23952462c59e0d9",
+                "id": "e861cdff9d404153a4891cbc12d2ce2c",
                 "mode": 0,
-                "speed": null,
+                "speed": 1.0,
                 "type": "speed"
             }
         ],
@@ -124,17 +124,17 @@
                 },
                 "crop_ratio": "free",
                 "crop_scale": 1.0,
-                "duration": 10800000000,
-                "height": 1306,
-                "id": "cc6d5bb3fd223e8abb3d99bb4e835b33",
+                "duration": 89288122,
+                "height": 1080,
+                "id": "9ffb34963fa530d7a4e4d62e8cb25835",
                 "local_material_id": "",
-                "material_id": "cc6d5bb3fd223e8abb3d99bb4e835b33",
-                "material_name": "image_62dad6cf37543ab2.png",
+                "material_id": "9ffb34963fa530d7a4e4d62e8cb25835",
+                "material_name": "video_72e4fcd1e5a73273.mp4",
                 "media_path": "",
                 "path": "",
-                "remote_url": "/mnt/oldroot/home/bird/autocut/render_uploads/3f878a21e2c4/Snipaste_2026-08-23_19-46-27.png",
-                "type": "photo",
-                "width": 2268
+                "remote_url": "/mnt/oldroot/home/bird/autocut/render_uploads/3f878a21e2c4/VID_20260823_211209.mp4",
+                "type": "video",
+                "width": 1920
             }
         ],
         "vocal_beautifys": [],
@@ -154,7 +154,7 @@
         {
             "attribute": 0,
             "flag": 0,
-            "id": "45581299c37e499482586096f9b02883",
+            "id": "bda7be575d3a449992210d7460f12ffc",
             "is_default_name": false,
             "name": "video",
             "segments": [],
@@ -163,9 +163,9 @@
         {
             "attribute": 0,
             "flag": 0,
-            "id": "7bf2173a7f204f71a7f37f11da5e26f2",
+            "id": "2964afe7c9d34d1d959026345a56046a",
             "is_default_name": false,
-            "name": "image_main",
+            "name": "video_main",
             "segments": [
                 {
                     "enable_adjust": true,
@@ -180,22 +180,22 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "052efe6e06314e88a7e57ee6f8ad633f",
-                    "material_id": "cc6d5bb3fd223e8abb3d99bb4e835b33",
+                    "id": "8ef0a88ebefe48adb64804d50fba06b3",
+                    "material_id": "9ffb34963fa530d7a4e4d62e8cb25835",
                     "target_timerange": {
                         "start": 0,
-                        "duration": 3000000
+                        "duration": 89288122
                     },
                     "common_keyframes": [],
                     "keyframe_refs": [],
                     "source_timerange": {
                         "start": 0,
-                        "duration": 3000000
+                        "duration": 89288122
                     },
-                    "speed": null,
+                    "speed": 1.0,
                     "volume": 1.0,
                     "extra_material_refs": [
-                        "74b6a449866e422fb23952462c59e0d9"
+                        "e861cdff9d404153a4891cbc12d2ce2c"
                     ],
                     "clip": {
                         "alpha": 1.0,

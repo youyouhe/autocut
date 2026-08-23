@@ -88,25 +88,20 @@ def add_image_impl(
         height=height
     )
     
-    # Check if video track exists, if not, add a default video track
-    try:
-        script.get_track(draft.Track_type.video, track_name=None)
-    except exceptions.TrackNotFound:
-        script.add_track(draft.Track_type.video, relative_index=0)
-    except NameError:
-        # If multiple video tracks exist (NameError), do nothing
-        pass
-
-    # Add video track (only when track doesn't exist)
+    # 轨道策略 (与 add_video_track 一致): 指定 track_name 只确保命名轨道, 不建多余默认轨;
+    # 未指定才保证默认轨道存在且不重复 add.
     if track_name is not None:
         try:
-            imported_track=script.get_imported_track(draft.Track_type.video, name=track_name)
-            # If no exception is thrown, the track already exists
+            script.get_imported_track(draft.Track_type.video, name=track_name)
         except exceptions.TrackNotFound:
-            # Track doesn't exist, create a new track
             script.add_track(draft.Track_type.video, track_name=track_name, relative_index=relative_index)
     else:
-        script.add_track(draft.Track_type.video, relative_index=relative_index)
+        try:
+            script.get_track(draft.Track_type.video, track_name=None)
+        except exceptions.TrackNotFound:
+            script.add_track(draft.Track_type.video, relative_index=relative_index)
+        except NameError:
+            pass
     
     # Generate material_name but don't download the image
     material_name = f"image_{url_to_hash(image_url)}.png"
