@@ -43,7 +43,8 @@ def resolve_ffmpeg(refresh=False):
         resolved = ''
         candidates = []
         if configured:
-            if configured.lower().endswith('.exe') and os.path.isfile(configured):
+            # 配置可指向可执行文件本身或其所在目录
+            if os.path.isfile(configured):
                 resolved = configured
                 candidates.append(os.path.dirname(configured))
             elif os.path.isdir(configured):

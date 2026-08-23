@@ -116,7 +116,7 @@ export default function RenderNodePanel() {
                   type="text"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
-                  placeholder="http://192.168.1.20:9020"
+                  placeholder="http://<渲染节点IP>:9020"
                   className="w-full border border-[#121212]/20 focus:border-[#121212] outline-none px-4 py-3 bg-white text-[#121212] font-light font-mono text-sm transition-colors"
                 />
               </div>

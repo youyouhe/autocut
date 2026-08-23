@@ -8,6 +8,14 @@ function getVisualJson(a: PerceiveResult | null | undefined) {
   catch { return {}; }
 }
 
+/** JSON 解析失败 (如 VLM 输出被 max_tokens 截断没闭合) 时, 退回展示原文, 不留空白. */
+function getVisualFallback(a: PerceiveResult | null | undefined): string {
+  const v = a?.visual_analysis;
+  if (!v) return '';
+  try { const m = v.match(/\{[\s\S]*\}/); return m && JSON.parse(m[0]) ? '' : v; }
+  catch { return v; }
+}
+
 interface Props {
   asset: Asset;
   shots: Shot[] | null | undefined;
@@ -27,6 +35,7 @@ export default function AssetDetailPopup({ asset, shots, anchor, onClose }: Prop
 
   const analysis = asset.analysis as PerceiveResult | { error?: string } | null | undefined;
   const vj = analysis && !('error' in analysis) ? getVisualJson(analysis as PerceiveResult) : {};
+  const vFallback = analysis && !('error' in analysis) ? getVisualFallback(analysis as PerceiveResult) : '';
   const audioText = analysis && !('error' in analysis) ? (analysis as PerceiveResult).audio?.full_text : '';
 
   // 锚点定位 + 视口夹取: 优先放卡片右侧, 右侧放不下放左侧; 上下做 min/max 夹取不溢出视口.
@@ -130,6 +139,9 @@ export default function AssetDetailPopup({ asset, shots, anchor, onClose }: Prop
                     )}
                   </div>
                   {vj.content && <p className="font-light leading-relaxed">🎬 {vj.content}</p>}
+                  {!vj.content && vFallback && (
+                    <p className="font-light leading-relaxed whitespace-pre-wrap">🎬 {vFallback}</p>
+                  )}
                   {(analysis as PerceiveResult).tags && (analysis as PerceiveResult).tags!.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {(analysis as PerceiveResult).tags!.map((t, i) => (

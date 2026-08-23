@@ -9,61 +9,9 @@ try: sys.stdout.reconfigure(encoding='utf-8')
 except Exception: pass
 
 # === 确保 ffmpeg 可被找到 (pythonw 启动时不继承交互终端的 PATH) ===
-# FFmpeg 路径优先级: settings FFMPEG_PATH > C:\ffmpeg\bin 等候选目录 > 系统 PATH.
-# resolve_ffmpeg() 返回可执行文件绝对路径, 并把其所在目录补进 PATH, 供所有
-# subprocess.run(['ffmpeg', ...]) 调用使用 (去音/封面/分镜/感知抽帧都依赖它).
-_FFMPEG_RESOLVED = None  # 缓存解析结果; None=未解析, ''=未找到(走 PATH 兜底)
-
-def _ffmpeg_default_candidates():
-    """系统级默认候选目录 (settings 未配置 FFMPEG_PATH 时兜底)."""
-    return [
-        r'C:\ffmpeg\bin',
-        os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'), 'ffmpeg', 'bin'),
-        os.path.join(os.environ.get('LOCALAPPDATA', ''), 'ffmpeg', 'bin'),
-    ]
-
-def resolve_ffmpeg(refresh=False):
-    """返回 ffmpeg 可执行文件绝对路径; 找不到时返回 'ffmpeg' (交给系统 PATH).
-    refresh=True 强制重新解析 (settings 改了 FFMPEG_PATH 后调用)."""
-    global _FFMPEG_RESOLVED
-    if _FFMPEG_RESOLVED is not None and not refresh:
-        return _FFMPEG_RESOLVED
-
-    from shutil import which
-
-    # 1. settings 里配置的 FFMPEG_PATH (可指向 exe 本身或其所在目录)
-    try:
-        import settings_store
-        configured = settings_store.effective_value('FFMPEG_PATH').strip()
-    except Exception:
-        configured = os.environ.get('FFMPEG_PATH', '').strip()
-
-    resolved = ''
-    candidates = []
-    if configured:
-        # 用户可能填的是 exe 路径, 也可能填的是 bin 目录
-        if configured.lower().endswith('.exe') and os.path.isfile(configured):
-            resolved = configured
-            candidates.append(os.path.dirname(configured))
-        elif os.path.isdir(configured):
-            candidates.append(configured)
-
-    # 2. 系统级默认目录兜底
-    candidates.extend(_ffmpeg_default_candidates())
-
-    # 3. 沿候选目录找 ffmpeg.exe; 同时也信任系统 PATH (which)
-    for d in candidates:
-        exe = os.path.join(d, 'ffmpeg.exe')
-        if os.path.isfile(exe):
-            resolved = resolved or exe
-            if d not in os.environ.get('PATH', ''):
-                os.environ['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
-            break
-    if not resolved:
-        resolved = which('ffmpeg') or 'ffmpeg'  # 最后交给 PATH
-
-    _FFMPEG_RESOLVED = resolved
-    return resolved
+# 解析逻辑统一在 ffmpeg_util (跨平台: Windows 走 .exe 候选目录, Linux 走
+# /usr/bin 等候选 + which). 这里保留同名导出, 兼容旧引用.
+from ffmpeg_util import resolve_ffmpeg
 
 resolve_ffmpeg()  # 启动时解析一次 + 把目录补进 PATH
 
@@ -981,7 +929,13 @@ def api_draft_add_asset(draft_id):
         from save_draft_impl import query_script_impl
         script = query_script_impl(draft_id=draft_id, force_update=False)
         if script is None:
-            return jsonify({'ok': False, 'error': '草稿未在缓存, 可能服务已重启; 请在 Drafts 重新打开该草稿(点 Render 触发载入)或新建草稿'}), 400
+            # 冷草稿 (服务重启后缓存丢失): 就地 warmup (从磁盘 draft_content.json 载入),
+            # 成功则继续; 不再要求用户手动去 Drafts 重新打开.
+            if not _warmup_draft(draft_id):
+                return jsonify({'ok': False, 'error': '草稿未在缓存且磁盘上未找到 (可能服务已重启后草稿目录变更); 请在 Drafts 重新打开该草稿或新建草稿'}), 400
+            script = query_script_impl(draft_id=draft_id, force_update=False)
+            if script is None:
+                return jsonify({'ok': False, 'error': '草稿载入缓存失败, 请在 Drafts 重新打开该草稿或新建草稿'}), 400
     except Exception as e:
         return jsonify({'ok': False, 'error': '草稿缓存校验失败: %s' % repr(e)[:160]}), 500
 
@@ -1701,7 +1655,8 @@ def api_chat():
     from flask import Response, stream_with_context
     from openai import OpenAI as _OAI
     from memory_store import get_analysis, save_analysis
-    from perceive import QWEN_API_KEY as QWEN_KEY, QWEN_BASE_URL as QWEN_URL, QWEN_MODEL as LLM_MODEL
+    from perceive import (QWEN_API_KEY as QWEN_KEY, QWEN_BASE_URL as QWEN_URL, QWEN_MODEL as LLM_MODEL,
+                          DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL)
     import chat_store
 
     is_new_conversation = not conversation_id
@@ -2671,7 +2626,12 @@ def api_chat():
 
     def generate():
         nonlocal draft_id
-        client = _OAI(api_key=QWEN_KEY, base_url=QWEN_URL)
+        # 聊天 agent 优先 DeepSeek (配置了 key 即用), 否则回退 Qwen
+        if DEEPSEEK_API_KEY:
+            client = _OAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+            LLM_MODEL = DEEPSEEK_MODEL
+        else:
+            client = _OAI(api_key=QWEN_KEY, base_url=QWEN_URL)
 
         # 先把 conversation_id 发给前端 (新建会话时前端还不知道 id, 后续消息才能带上它)
         yield f"data: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
@@ -2714,13 +2674,63 @@ def api_chat():
 13. 用户说"主视频/这次的视频/最新录的"而不指名具体文件时，先调用 get_main_video 解析出实际文件名再继续，别直接猜或反复问用户文件名
 14. add_text 不止能加字幕，也能加标题/水印/角标等文字标识：字幕用默认 track_name='text_main'、transform_y=-0.8（画面下方）；独立的标题/标识要换一个不同的 track_name（如 'label_1'）避免和字幕叠压覆盖，并按需调整 transform_x/transform_y 到画面其他位置（如 0.8 靠上做标题）；background_alpha 只是纯色块透明度，不是模糊/毛玻璃特效，别答应用户做不到的效果；要用入场/出场动画时先调 list_text_animations 查真实存在的动画名，不要凭印象瞎填"""
 
-        # 多轮记忆: 历史里只取 user/assistant 的文本内容喂给 LLM 当上下文
-        # (tool 卡片只是给用户看的执行细节, 不需要还原 tool_call_id 链路); 截断最近 20 条防止越聊越贵
-        history_for_llm = [
-            {'role': m['role'], 'content': m['content']}
-            for m in prior_messages
-            if m.get('role') in ('user', 'assistant') and m.get('content')
-        ][-20:]
+        # 多轮记忆: user/assistant 文本 + 工具结果回执. 只喂文本会丢工具产出 ——
+        # 上一轮以 tool 结尾(无 assistant 总结)时, LLM 看到的历史是断的, 只好全部重查.
+        # 回执处理三原则:
+        #   a. 智能截断: 任务依赖的关键字段 (srt/segments/tags 等结构化数据) 优先保留,
+        #      否则 get_transcript 的时间戳被切掉 → agent 每轮重查同一工具 (实测根源);
+        #   b. 连续回执合并成一条 user 消息, 避免连续多条 user 角色的异常序列;
+        #   c. 相同回执去重 (同工具同结果只留最新), 窗口里不堆重复.
+        def _receipt_text(td):
+            res = td.get('result')
+            if isinstance(res, dict):
+                # 关键字段全量保留 (总预算 1600 字), 其余字段压到 150 字
+                key_budget, plain, parts = 1200, json.dumps(res, ensure_ascii=False), []
+                for k in ('srt', 'segments', 'transcript', 'tags', 'tracks', 'resources', 'shots'):
+                    if k in res:
+                        try:
+                            kv = json.dumps({k: res[k]}, ensure_ascii=False)
+                        except Exception:
+                            kv = str({k: res[k]})
+                        if len(kv) <= key_budget:
+                            parts.append(kv[:key_budget])
+                            key_budget -= len(kv)
+                if parts:
+                    rest = {k: str(v)[:150] for k, v in res.items()
+                            if k not in ('srt', 'segments', 'transcript', 'tags', 'tracks', 'resources', 'shots')}
+                    txt = '; '.join(parts) + (f'; 其余字段: {json.dumps(rest, ensure_ascii=False)[:300]}' if rest else '')
+                else:
+                    txt = plain[:600]
+                return txt
+            return str(res)[:300]
+
+        _hist, _seen_receipts, _pend = [], {}, []
+        def _flush_pend():
+            nonlocal _pend
+            if _pend:
+                _hist.append({'role': 'user', 'content': '\n'.join(_pend)})
+                _pend = []
+        for m in prior_messages:
+            role = m.get('role')
+            if role in ('user', 'assistant') and m.get('content'):
+                _flush_pend()
+                _hist.append({'role': role, 'content': m['content']})
+            elif role == 'tool' and m.get('toolDetails'):
+                td = m['toolDetails']
+                try:
+                    key = hash(json.dumps(td.get('result'), ensure_ascii=False, sort_keys=True, default=str))
+                except Exception:
+                    key = None
+                if key is not None and key in _seen_receipts:
+                    # 重复回执: 移除旧条目, 让最新位置覆盖 (见下 _seen_receipts 记录 idx)
+                    _pend.append(f"[工具 {td.get('tool')} 结果回执] (与早前回执相同, 已省略)")
+                    _seen_receipts[key] = True
+                    continue
+                if key is not None:
+                    _seen_receipts[key] = True
+                _pend.append(f"[工具 {td.get('tool')} 结果回执] {_receipt_text(td)}")
+        _flush_pend()
+        history_for_llm = _hist[-30:]
 
         messages = [
             {"role": "system", "content": system},
@@ -2732,8 +2742,10 @@ def api_chat():
         turn_log = list(prior_messages)
         turn_log.append({'role': 'user', 'content': message})
 
-        # 多轮工具调用 (最多 12 轮 — 覆盖 analyze→list→detail→create→add(video/text/audio/image)→save→render→status 完整链路)
-        for _ in range(12):
+        # 多轮工具调用 (不限轮次, 直到模型给出最终文本; 连续空响应 3 次或连续 200 轮才停, 防失控)
+        _consecutive_empty = 0
+        _rounds = 0
+        while _rounds < 200:
             # LLM 提供商偶发 Connection error / 超时: 重试 3 次 (递增退避), 避免一次抖动就中断整轮对话
             resp = None
             last_err = None
@@ -2744,7 +2756,7 @@ def api_chat():
                         messages=messages,
                         tools=TOOLS,
                         tool_choice="auto",
-                        max_tokens=2000,
+                        # 不设 max_tokens —— 思考型模型思考过程计入输出, 限小了正文会被掏空 (空响应根源)
                     )
                     last_err = None
                     break
@@ -2760,6 +2772,23 @@ def api_chat():
                 break
 
             msg = resp.choices[0].message
+            # 空响应 (无文本且无工具调用) —— DeepSeek 等模型偶发, 不当"本轮完成",
+            # 追问让它继续; 连续 3 次仍空才结束 (否则用户看到 agent 无声停摆)
+            if not msg.content and not msg.tool_calls:
+                _consecutive_empty += 1
+                print('[chat] 空响应 #%d: finish_reason=%s, completion_tokens=%s, reasoning=%d字' % (
+                    _consecutive_empty, getattr(resp.choices[0], 'finish_reason', '?'),
+                    getattr(resp.usage, 'completion_tokens', '?') if resp.usage else '?',
+                    len(getattr(msg, 'reasoning_content', '') or '')), flush=True)
+                if _consecutive_empty >= 3:
+                    note = '（模型连续返回空内容, 本轮中断 —— 发送「继续」我会接着推进）'
+                    yield f"data: {json.dumps({'text': note}, ensure_ascii=False)}\n\n"
+                    turn_log.append({'role': 'assistant', 'content': note})
+                    break
+                messages.append(msg.model_dump())
+                messages.append({'role': 'user', 'content': '（系统提示: 上一条回复为空, 请继续当前任务; 若任务已完成, 请给出总结）'})
+                continue
+            _consecutive_empty = 0
             messages.append(msg.model_dump())
 
             # 有文本输出 → 流式发送
@@ -2772,10 +2801,21 @@ def api_chat():
                 break
 
             # 执行工具调用
+            _rounds += 1
             for tc in msg.tool_calls:
                 fn_name = tc.function.name
-                fn_args = json.loads(tc.function.arguments or '{}')
-                tool_result_str = execute_tool(fn_name, fn_args)
+                # 参数 JSON 可能被截断/格式错 (模型输出长度限制) —— 解析失败不当异常抛
+                # (会静默杀死整条 SSE 流), 而是把错误作为工具结果回给模型让它自行修正
+                try:
+                    fn_args = json.loads(tc.function.arguments or '{}')
+                except json.JSONDecodeError as je:
+                    fn_args = {}
+                    tool_result_str = json.dumps({'error': f'工具参数 JSON 解析失败: {je}; 请重新调用并给出完整合法的 JSON 参数'}, ensure_ascii=False)
+                else:
+                    try:
+                        tool_result_str = execute_tool(fn_name, fn_args)
+                    except Exception as te:
+                        tool_result_str = json.dumps({'error': f'工具执行异常: {te}'}, ensure_ascii=False)
                 # tool_result_str 是 JSON 字符串
                 tool_result_obj = json.loads(tool_result_str)
 
@@ -2800,6 +2840,13 @@ def api_chat():
                 })
 
             # 继续下一轮，让 LLM 基于工具结果继续回答
+
+        # 轮次兜底: 最后一条还是 tool 结果 (任务没做完但达到 200 轮防失控上限) ——
+        # 明确告知而非无声结束, 用户发"继续"即可接着干 (上下文都在)
+        if messages and isinstance(messages[-1], dict) and messages[-1].get('role') == 'tool':
+            note = '（本轮工具调用已达防失控上限，任务尚未收尾 —— 发送「继续」我会接着推进）'
+            yield f"data: {json.dumps({'text': note}, ensure_ascii=False)}\n\n"
+            turn_log.append({'role': 'assistant', 'content': note})
 
         try:
             chat_store.save_messages(conversation_id, turn_log, draft_id, user_id=uid)
@@ -2970,6 +3017,10 @@ def api_localsend_start():
     """按需启动 LocalSend 接收端 (前端"接收"按钮触发)"""
     try:
         import localsend_recv
+        # 设置页改过 LOCALSEND_IF_IP 后无需重启: 启动前按当前 env 刷新绑定 IP
+        _if_ip = os.environ.get('LOCALSEND_IF_IP', '').strip()
+        if _if_ip:
+            localsend_recv.set_multicast_interface(_if_ip)
         # 多租户: 收到的文件落到该用户子目录
         uid = current_user_id()
         save_dir = os.path.join(UPLOAD_DIR, uid or '_shared')
@@ -3064,6 +3115,11 @@ def api_settings_test():
         api_key = data.get('QWEN_API_KEY') or settings_store.effective_value('QWEN_API_KEY')
         base_url = data.get('QWEN_BASE_URL') or settings_store.effective_value('QWEN_BASE_URL')
         model = data.get('QWEN_MODEL') or settings_store.effective_value('QWEN_MODEL')
+        return jsonify(settings_store.test_llm(api_key, base_url, model))
+    if target == 'deepseek':
+        api_key = data.get('DEEPSEEK_API_KEY') or settings_store.effective_value('DEEPSEEK_API_KEY')
+        base_url = data.get('DEEPSEEK_BASE_URL') or settings_store.effective_value('DEEPSEEK_BASE_URL')
+        model = data.get('DEEPSEEK_MODEL') or settings_store.effective_value('DEEPSEEK_MODEL')
         return jsonify(settings_store.test_llm(api_key, base_url, model))
     if target == 'asr':
         endpoint = data.get('ASR_ENDPOINT') or settings_store.effective_value('ASR_ENDPOINT')

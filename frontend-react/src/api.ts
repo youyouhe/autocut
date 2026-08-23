@@ -556,7 +556,7 @@ export function saveSettings(values: Record<string, string | boolean>): Promise<
   });
 }
 export interface TestResult { ok: boolean; error?: string; model?: string; status?: number; detail?: string }
-export function testSetting(target: 'llm' | 'asr' | 'tools', overrides: Record<string, string | boolean>): Promise<TestResult> {
+export function testSetting(target: 'llm' | 'deepseek' | 'asr' | 'tools', overrides: Record<string, string | boolean>): Promise<TestResult> {
   return jsonFetch<TestResult>('/api/settings/test', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ target, ...overrides }),

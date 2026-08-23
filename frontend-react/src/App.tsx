@@ -190,7 +190,7 @@ function Workbench({ me, onLogout }: { me: Me; onLogout: () => void }) {
         {activeTab === 'assets' && <AssetPanel assets={assets} setAssets={setAssets} refreshAssets={refreshAssetsWithCache} draftId={draftId} />}
         {activeTab === 'chat' && <ChatPanel assets={assets} draftId={draftId} setDraftId={setDraftId} conversationId={conversationId} setConversationId={setConversationId} refreshAssets={refreshAssets} />}
         {activeTab === 'templates' && <TemplatesPanel setDraftId={setDraftId} onGenerated={() => setActiveTab('drafts')} />}
-        {activeTab === 'drafts' && <DraftPanel onRendered={() => setActiveTab('render')} onCreated={() => setActiveTab('chat')} onOpenChat={(id) => { setDraftId(id); setActiveTab('chat'); }} onOpenTimeline={(id) => { setDraftId(id); setActiveTab('timeline'); }} setDraftId={setDraftId} />}
+        {activeTab === 'drafts' && <DraftPanel draftId={draftId} onRendered={() => setActiveTab('render')} onCreated={() => setActiveTab('chat')} onOpenChat={(id) => { setDraftId(id); setActiveTab('chat'); }} onOpenTimeline={(id) => { setDraftId(id); setActiveTab('timeline'); }} setDraftId={setDraftId} />}
         {activeTab === 'timeline' && (
           <TimelinePanel
             draftId={draftId}

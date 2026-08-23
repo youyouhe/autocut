@@ -38,9 +38,10 @@ _sessions = {}            # sessionId -> {files: {fileId: {token, dto, done}}, s
 _sessions_lock = threading.Lock()
 _active_session = None    # 同一时间只允许一个活跃会话 (协议要求, 否则 409)
 
-# === 多播出口网卡 IP (None=让OS选, 常选错; 指定后强制从该网卡发) ===
+# === 多播出口网卡 IP (None=自动探测; 指定后强制从该网卡发) ===
+# 优先级: 环境变量 LOCALSEND_IF_IP (设置页可配) > 自动探测 > OS 默认路由。
 # 电脑连手机热点时, 应设为电脑在该热点的 IP (如 192.168.132.187)
-MULTICAST_IF_IP = None
+MULTICAST_IF_IP = os.environ.get('LOCALSEND_IF_IP', '').strip() or None
 
 
 def set_multicast_interface(ip):
@@ -50,35 +51,54 @@ def set_multicast_interface(ip):
 
 
 def _detect_outbound_ip():
-    """探测去往默认网关的本机出口 IP (手机热点场景下=电脑连热点的WLAN IP)。
-    避开 WSL/Hyper-V 虚拟网卡(172.17.x.x)和 WireGuard(10.0.0.x),优先选物理网卡。"""
+    """探测局域网出口 IP。用 psutil 枚举网卡 (hostname 解析在部分 Linux 上只有
+    127.0.1.1, 不可靠), 按接口名+网段排除 VPN/WSL/Docker 虚拟网卡, 优先物理网卡。
+    兜底: connect('8.8.8.8') 探测默认路由 (VPN 全局接管时会选错, 仅最后手段)."""
+    # (ip, ifname) 候选; psutil 不可用时退回 getaddrinfo
     candidates = []
     try:
-        # 取所有本机 IPv4
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ip = info[4][0]
-            if ip.startswith('127.') or ip.startswith('169.254.'):
+        import psutil
+        for ifname, addrs in psutil.net_if_addrs().items():
+            ln = ifname.lower()
+            # 虚拟/隧道接口直接整卡排除 (名字特征)
+            if any(k in ln for k in ('tun', 'wg', 'tap', 'docker', 'br-', 'veth',
+                                     'vmnet', 'vethernet', 'hytun', 'utun')):
                 continue
-            candidates.append(ip)
+            for a in addrs:
+                if a.family != socket.AF_INET:
+                    continue
+                ip = a.address
+                if ip.startswith('127.') or ip.startswith('169.254.'):
+                    continue
+                candidates.append((ip, ifname))
     except Exception:
         pass
+    if not candidates:
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = info[4][0]
+                if ip.startswith('127.') or ip.startswith('169.254.'):
+                    continue
+                candidates.append((ip, ''))
+        except Exception:
+            pass
     # 去重
     candidates = list(dict.fromkeys(candidates))
-    # 优先级: 排除 WSL(172.17-31.x)、WireGuard(10.0.0.x)、Docker(172.x)
-    # 偏好 192.168.x / 10.x(非wireguard) 的物理网卡
-    def score(ip):
+    # 网段打分: 偏好 192.168.x (家庭/热点 LAN), 降权 172.x (WSL/Docker)、10.x、CGNAT
+    def score(item):
+        ip = item[0]
         if ip.startswith('192.168.'): return 0      # 家庭/热点 LAN, 最优先
         if ip.startswith('172.'):                   # WSL/Docker 虚拟, 降权
             return 10
-        if ip == '10.0.0.3':                        # WireGuard, 降权
+        if ip.startswith('10.'):                    # 10.x (含 WireGuard), 降权
             return 20
-        if ip.startswith('10.'):                    # 其他 10.x
-            return 5
+        if ip.startswith('100.64.') or ip.startswith('100.1'):  # CGNAT/VPN (Tailscale 等), 降权
+            return 25
         return 15
     candidates.sort(key=score)
     if candidates:
-        return candidates[0]
-    # 兜底: 用 connect 探测
+        return candidates[0][0]
+    # 兜底: 用 connect 探测 (默认路由; 有全局 VPN 时会选到 VPN IP)
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('8.8.8.8', 80))

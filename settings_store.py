@@ -14,14 +14,27 @@ SETTINGS_SCHEMA = [
     {'key': 'QWEN_BASE_URL', 'label': 'Qwen Base URL', 'secret': False, 'group': 'llm',
      'default': 'https://dashscope.aliyuncs.com/compatible-mode/v1'},
     {'key': 'QWEN_MODEL', 'label': 'Qwen Model', 'secret': False, 'group': 'llm', 'default': 'qwen3.7-plus'},
+    # DeepSeek (聊天 agent 优先使用; 配了 Key 即生效, 未配回退 Qwen). 独立分组.
+    {'key': 'DEEPSEEK_API_KEY', 'label': 'DeepSeek API Key (聊天 agent, 留空则用 Qwen)',
+     'secret': True, 'group': 'deepseek'},
+    {'key': 'DEEPSEEK_BASE_URL', 'label': 'DeepSeek Base URL', 'secret': False, 'group': 'deepseek',
+     'default': 'https://api.deepseek.com'},
+    {'key': 'DEEPSEEK_MODEL', 'label': 'DeepSeek Model (聊天)', 'secret': False, 'group': 'deepseek',
+     'default': 'deepseek-v4-flash'},
     {'key': 'ASR_ENDPOINT', 'label': 'ASR Endpoint', 'secret': False, 'group': 'asr',
      'default': 'https://asr.smartbid.site/inference'},
     {'key': 'ASR_API_KEY', 'label': 'ASR API Key', 'secret': True, 'group': 'asr'},
     {'key': 'PREFER_ASR', 'label': '优先使用 ASR 判断视频内容 (ASR 不可用/静音时才用 VLM 看画面)',
      'secret': False, 'group': 'analysis', 'type': 'bool', 'default': '1'},
+    # 感知分析 (VLM) 改走 DeepSeek 视觉模型 (需已配 DeepSeek Key)
+    {'key': 'PERCEIVE_USE_DEEPSEEK', 'label': '感知分析用 DeepSeek (Qwen 关闭/额度用尽时勾选; 需 DeepSeek Key)',
+     'secret': False, 'group': 'analysis', 'type': 'bool', 'default': '0'},
     # FFmpeg 可执行文件路径. pythonw 后台启动不继承终端 PATH, 若 ffmpeg 不在系统 PATH 里,
     # 所有 subprocess 调用(去音/封面/分镜/感知抽帧)都会 WinError 2. 留空 = 走 PATH 自动查找.
     {'key': 'FFMPEG_PATH', 'label': 'FFmpeg 可执行文件路径 (留空则用系统 PATH)',
+     'secret': False, 'group': 'tools', 'default': ''},
+    # LocalSend 多播出口 IP. 多网卡/VPN 环境自动探测可能选错, 显式指定局域网 IP
+    {'key': 'LOCALSEND_IF_IP', 'label': 'LocalSend 绑定 IP (留空自动探测局域网网卡)',
      'secret': False, 'group': 'tools', 'default': ''},
 ]
 
@@ -122,6 +135,13 @@ def _hot_patch(updates):
         if 'QWEN_API_KEY' in updates: perceive.QWEN_API_KEY = updates['QWEN_API_KEY']
         if 'QWEN_BASE_URL' in updates: perceive.QWEN_BASE_URL = updates['QWEN_BASE_URL']
         if 'QWEN_MODEL' in updates: perceive.QWEN_MODEL = updates['QWEN_MODEL']
+        if 'DEEPSEEK_API_KEY' in updates: perceive.DEEPSEEK_API_KEY = updates['DEEPSEEK_API_KEY']
+        if 'DEEPSEEK_BASE_URL' in updates: perceive.DEEPSEEK_BASE_URL = updates['DEEPSEEK_BASE_URL']
+        if 'DEEPSEEK_MODEL' in updates: perceive.DEEPSEEK_MODEL = updates['DEEPSEEK_MODEL']
+        if 'PERCEIVE_USE_DEEPSEEK' in updates:
+            perceive.PERCEIVE_USE_DEEPSEEK = (updates['PERCEIVE_USE_DEEPSEEK'] == '1')
+        if 'DEEPSEEK_VISION_MODEL' in updates:
+            perceive.DEEPSEEK_VISION_MODEL = updates['DEEPSEEK_VISION_MODEL']
         if 'ASR_ENDPOINT' in updates: perceive.ASR_ENDPOINT = updates['ASR_ENDPOINT']
         if 'ASR_API_KEY' in updates: perceive.ASR_API_KEY = updates['ASR_API_KEY']
         if 'PREFER_ASR' in updates: perceive.PREFER_ASR = (updates['PREFER_ASR'] == '1')
@@ -161,20 +181,20 @@ def test_ffmpeg(path):
     path 为空时走 resolve_ffmpeg 的自动查找 (默认候选目录 / 系统 PATH)."""
     import subprocess
     try:
-        # 优先用用户填的路径; 留空则交给 render_server.resolve_ffmpeg 自动找
+        # 优先用用户填的路径; 留空则交给 ffmpeg_util.resolve_ffmpeg 自动找
         exe = (path or '').strip()
         if not exe:
-            rs = sys.modules.get('render_server')
-            if rs is not None and hasattr(rs, 'resolve_ffmpeg'):
-                exe = rs.resolve_ffmpeg()
-            else:
+            try:
+                from ffmpeg_util import resolve_ffmpeg as _resolve
+                exe = _resolve()
+            except Exception:
                 from shutil import which
                 exe = which('ffmpeg') or 'ffmpeg'
         if not exe:
-            return {'ok': False, 'error': '未找到 ffmpeg (请在系统 PATH 或默认目录 C:\\ffmpeg\\bin 中安装, 或在上方填入完整路径)'}
-        # 直接调用户填的路径; 若是目录则补 ffmpeg.exe
+            return {'ok': False, 'error': '未找到 ffmpeg (请安装到系统 PATH, 或在上方填入完整路径; Windows 也可放 C:\\ffmpeg\\bin)'}
+        # 直接调用户填的路径; 若是目录则补可执行名
         if os.path.isdir(exe):
-            exe = os.path.join(exe, 'ffmpeg.exe')
+            exe = os.path.join(exe, 'ffmpeg.exe' if sys.platform == 'win32' else 'ffmpeg')
         r = subprocess.run([exe, '-version'], capture_output=True, timeout=15)
         if r.returncode != 0:
             return {'ok': False, 'error': f'ffmpeg 退出码 {r.returncode}: {r.stderr.decode("utf-8","ignore")[:300]}'}

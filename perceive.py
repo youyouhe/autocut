@@ -18,6 +18,15 @@ QWEN_API_KEY = os.environ.get("QWEN_API_KEY") or os.environ.get("DASHSCOPE_API_K
 QWEN_BASE_URL = os.environ.get("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3.7-plus")
 
+# === DeepSeek (聊天 agent 用; 配了 key 则聊天走 DeepSeek, 否则回退 Qwen) ===
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+# 感知分析 (VLM 看画面) 是否改走 DeepSeek. 默认关 (Qwen-VL 稳定).
+# 开启需 DeepSeek 视觉模型 (deepseek-v4-flash-vision-exp).
+PERCEIVE_USE_DEEPSEEK = os.environ.get("PERCEIVE_USE_DEEPSEEK", "0") == "1"
+DEEPSEEK_VISION_MODEL = os.environ.get("DEEPSEEK_VISION_MODEL", "deepseek-v4-flash-vision-exp")
+
 ASR_ENDPOINT = os.environ.get("ASR_ENDPOINT", "https://asr.smartbid.site/inference")
 ASR_API_KEY = os.environ.get("ASR_API_KEY", "")
 
@@ -55,9 +64,11 @@ import config
 # ============================================================ 基础工具
 
 def ffprobe_meta(video_path):
-    """获取视频元数据（时长/分辨率/帧率）"""
+    """获取视频元数据（时长/分辨率/帧率）.
+    手机竖拍视频常以横编码 + rotation side data (90/270) 表示竖屏 —— width/height
+    按"显示方向"返回 (90/270 时交换), 并带 rotation 字段记录原始旋转指令."""
     cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
-           '-show_entries', 'stream=width,height,duration,r_frame_rate',
+           '-show_entries', 'stream=width,height,duration,r_frame_rate,side_data_list',
            '-show_entries', 'format=duration',
            '-of', 'json', video_path]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
@@ -69,11 +80,44 @@ def ffprobe_meta(video_path):
     streams = data.get('streams') or []
     stream = streams[0] if streams else {}
     fmt = data.get('format') or {}
+    # 旋转指令: 新版在 side_data_list[].rotation, 旧版在 stream tags rotate;
+    # 部分 ffprobe 构建的 JSON 模式不展开 rotation 字段, 再用 csv 模式兜底探测一次
+    rotation = 0
+    for sd in (stream.get('side_data_list') or []):
+        rot = sd.get('rotation')
+        if rot is not None:
+            rotation = int(rot)
+            break
+    if not rotation:
+        try:
+            rotation = int((stream.get('tags') or {}).get('rotate', 0) or 0)
+        except (TypeError, ValueError):
+            rotation = 0
+    if not rotation:
+        try:
+            r2 = subprocess.run(
+                ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                 '-show_entries', 'side_data=rotation', '-of', 'csv=p=0',
+                 '-read_intervals', '%+#1', video_path],
+                capture_output=True, text=True, timeout=15, errors='replace')
+            for line in (r2.stdout or '').splitlines():
+                line = line.strip()
+                if line:
+                    rotation = abs(int(float(line)))
+                    break
+        except (TypeError, ValueError):
+            rotation = 0
+    rotation = rotation % 360
+    w = int(stream.get('width', 0) or 0)
+    h = int(stream.get('height', 0) or 0)
+    if rotation in (90, 270):
+        w, h = h, w
     return {
         'duration': float(fmt.get('duration', 0) or stream.get('duration', 0) or 0),
-        'width': int(stream.get('width', 0) or 0),
-        'height': int(stream.get('height', 0) or 0),
+        'width': w,
+        'height': h,
         'fps': stream.get('r_frame_rate', '30/1'),
+        'rotation': rotation,
     }
 
 
@@ -201,10 +245,15 @@ def detect_scenes_ffmpeg(video_path, threshold=0.3):
 
 # ============================================================ VLM
 
-def vlm_analyze(frames, prompt, max_tokens=1000):
-    """调 Qwen3.7-Plus 分析图片"""
+def vlm_analyze(frames, prompt, max_tokens=None):
+    """调 VLM 分析图片. 默认 Qwen-VL; 设置页勾选"感知分析用 DeepSeek"且配了 key 时走 DeepSeek 视觉模型."""
     from openai import OpenAI
-    client = OpenAI(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL)
+    if PERCEIVE_USE_DEEPSEEK and DEEPSEEK_API_KEY:
+        client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+        model = DEEPSEEK_VISION_MODEL
+    else:
+        client = OpenAI(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL)
+        model = QWEN_MODEL
 
     content = [{"type": "text", "text": prompt}]
     for f in frames:
@@ -214,13 +263,27 @@ def vlm_analyze(frames, prompt, max_tokens=1000):
         })
 
     r = client.chat.completions.create(
-        model=QWEN_MODEL,
+        model=model,
         messages=[{"role": "user", "content": content}],
-        max_tokens=max_tokens
+        **({'max_tokens': max_tokens} if max_tokens else {})
     )
-    text = r.choices[0].message.content if r.choices else ''
-    if text is None:
-        text = ''
+    msg = r.choices[0].message if r.choices else None
+    text = getattr(msg, 'content', None) or ''
+    if not text.strip():
+        # 思考型模型偶发把内容放进 reasoning_content, 或思考耗尽 token 导致正文为空
+        text = getattr(msg, 'reasoning_content', None) or ''
+    if not text.strip():
+        # 空正文不当成功缓存 (否则前端只剩尺寸元数据, 无描述) —— 重试一次, 仍空则报错
+        r = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": content}],
+            max_tokens=max_tokens
+        )
+        msg = r.choices[0].message if r.choices else None
+        text = getattr(msg, 'content', None) or ''
+    if not text.strip():
+        raise RuntimeError(f'VLM ({model}) 返回空正文 (output_tokens='
+                           f'{getattr(r.usage, "completion_tokens", 0) if r.usage else 0}), 请重试或换模型')
     usage = r.usage
     return {
         'text': text,
@@ -519,6 +582,8 @@ def perceive_image(image_path, max_width=1024):
   "text_in_image": "图片中是否有文字/水印, 如有则提取",
   "tags": ["5-8个描述图片主体/场景/物体的短关键词, 如'山间','水塘','凉亭','高压线','自然风景'"]
 }}"""
+    # 截图类图片文字量大, 默认 1000 tokens 会把 JSON 掐断在 text_in_image 中间,
+    # 前端解析不出字段 —— 图片分析放宽到 3000.
     vlm_result = vlm_analyze([{'time': 0, 'b64': b64}], prompt)
     return {
         'meta': {'width': meta['width'], 'height': meta['height']},

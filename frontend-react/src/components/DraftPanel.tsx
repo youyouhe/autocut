@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Clock, Calendar, Trash2, Video, RefreshCw, Loader2, Plus, MessageSquare, Film } from 'lucide-react';
+import { Clock, Calendar, Trash2, Video, RefreshCw, Loader2, Plus, MessageSquare, Film, Star } from 'lucide-react';
 import * as api from '../api';
 import type { Draft } from '../api';
 
 interface Props {
+  draftId: string | null;       // 当前激活草稿 (Assets/Chat 面板操作的目标), 卡片上加标识
   onRendered: () => void;       // 提交渲染后切到 Tasks tab
   onCreated: () => void;        // 新建草稿后切到 Chat tab
   onOpenChat: (id: string) => void;  // 从某草稿进到它的对话列表 (setDraftId + 切 Chat tab)
@@ -11,7 +12,7 @@ interface Props {
   setDraftId: (id: string | null) => void;
 }
 
-export default function DraftPanel({ onRendered, onCreated, onOpenChat, onOpenTimeline, setDraftId }: Props) {
+export default function DraftPanel({ draftId, onRendered, onCreated, onOpenChat, onOpenTimeline, setDraftId }: Props) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [loading, setLoading] = useState(false);
   const [rendering, setRendering] = useState<string | null>(null);
@@ -100,8 +101,14 @@ export default function DraftPanel({ onRendered, onCreated, onOpenChat, onOpenTi
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-8">
           {drafts.map((d) => (
-            <div key={d.id} className="border border-[#121212]/10 bg-transparent overflow-hidden group flex flex-col hover:border-[#121212]/30 transition-colors">
+            <div key={d.id} onClick={() => setDraftId(d.id)} title="点击设为激活草稿 (Assets 加到草稿 / Chat 对话的目标)"
+              className={`border overflow-hidden group flex flex-col transition-colors cursor-pointer ${draftId === d.id ? 'border-amber-600/60 bg-amber-50/30' : 'border-[#121212]/10 bg-transparent hover:border-[#121212]/30'}`}>
               <div className="h-48 border-b border-[#121212]/10 relative overflow-hidden flex-shrink-0 bg-[#121212] flex items-center justify-center">
+                {draftId === d.id && (
+                  <div className="absolute top-3 left-3 z-10 bg-amber-600/90 text-white text-[8px] px-2 py-0.5 uppercase tracking-widest font-bold flex items-center gap-1">
+                    <Star size={10} strokeWidth={2} fill="currentColor" /> Active
+                  </div>
+                )}
                 {d.cover_url ? (
                   <img src={d.cover_url} alt={d.name} className="w-full h-full object-contain"
                     onError={(e) => { e.currentTarget.style.display = 'none'; }} />
@@ -142,7 +149,7 @@ export default function DraftPanel({ onRendered, onCreated, onOpenChat, onOpenTi
                       <Film size={12} strokeWidth={2} /> Timeline
                     </button>
                   </div>
-                  <button onClick={() => handleDelete(d.folder)}
+                  <button onClick={(e) => { e.stopPropagation(); handleDelete(d.folder); }}
                     className="flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold opacity-40 hover:opacity-100 hover:text-red-700 transition-colors"
                     title="Delete Draft">
                     <Trash2 size={12} strokeWidth={2} /> Delete

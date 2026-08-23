@@ -444,8 +444,10 @@ function AssetCard({
   return (
     <div ref={ref} className={`border overflow-hidden group flex flex-col transition-colors ${selected ? 'border-[#121212]' : 'border-[#121212]/10 hover:border-[#121212]/30'}`}>
       <div className={`${asset._portrait ? 'h-72' : 'h-48'} border-b border-[#121212]/10 flex items-center justify-center relative bg-[#121212]`}
-        onMouseEnter={asset.type === 'video' ? (e) => { setHovering(true); onHover(e, asset.path); } : undefined}
-        onMouseLeave={asset.type === 'video' ? (e) => { setHovering(false); onLeave(e, asset.path); } : undefined}>
+        onMouseEnter={asset.type === 'video' ? (e) => { setHovering(true); onHover(e, asset.path); }
+          : asset.type === 'image' ? () => setHovering(true) : undefined}
+        onMouseLeave={asset.type === 'video' ? (e) => { setHovering(false); onLeave(e, asset.path); }
+          : asset.type === 'image' ? () => setHovering(false) : undefined}>
         {asset.type === 'video' ? (
           <>
             {/* 视口外: 仅占位图标, 零请求; 进入视口: 挂缩略图 jpg; hover: 换成 <video> 播放 */}
@@ -482,7 +484,20 @@ function AssetCard({
             )}
           </>
         ) : asset.type === 'image' ? (
-          <img className="absolute inset-0 w-full h-full object-contain" src={api.serveUrl(asset.path)} alt={asset.name} loading="lazy" />
+          <>
+            <img className="absolute inset-0 w-full h-full object-contain" src={api.serveUrl(asset.path)} alt={asset.name} loading="lazy" />
+            {/* hover 大图预览: 居中浮层, pointer-events-none 不会打断 hover 状态 */}
+            {hovering && (
+              <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none bg-[#121212]/60"
+                style={{ animation: 'fadeIn 120ms ease-out' }}>
+                <img className="max-w-[80vw] max-h-[80vh] object-contain shadow-2xl"
+                  src={api.serveUrl(asset.path)} alt={asset.name} />
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-[#121212]/80 text-[#FDFCF8] text-[10px] uppercase tracking-widest px-4 py-1.5 max-w-[70vw] truncate">
+                  {asset.name} · {formatSize(asset.size)}
+                </div>
+              </div>
+            )}
+          </>
         ) : asset.type === 'audio' ? (
           <div className="flex flex-col items-center gap-3 px-4">
             <Music size={32} strokeWidth={1} className="text-white/30" />

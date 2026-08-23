@@ -3,7 +3,7 @@ import { Settings, Loader2, CheckCircle2, XCircle, Save, Zap } from 'lucide-reac
 import * as api from '../api';
 import type { SettingField } from '../api';
 
-const GROUP_LABELS: Record<string, string> = { llm: 'Qwen VLM / Chat', asr: '语音识别 (ASR)', analysis: '分析策略', tools: '工具 (FFmpeg)' };
+const GROUP_LABELS: Record<string, string> = { llm: 'Qwen VLM / Chat', deepseek: 'DeepSeek (Chat / VLM)', asr: '语音识别 (ASR)', analysis: '分析策略', tools: '工具 (FFmpeg)' };
 
 export default function SettingsPanel() {
   const [fields, setFields] = useState<SettingField[]>([]);
@@ -58,7 +58,7 @@ export default function SettingsPanel() {
     } finally { setSavingGroup(null); }
   };
 
-  const handleTest = async (group: 'llm' | 'asr' | 'tools') => {
+  const handleTest = async (group: 'llm' | 'deepseek' | 'asr' | 'tools') => {
     setTesting(group);
     setTestResults(cur => ({ ...cur, [group]: undefined as any }));
     try {
@@ -69,7 +69,8 @@ export default function SettingsPanel() {
     } finally { setTesting(null); }
   };
 
-  const groups = ['llm', 'asr', 'analysis', 'tools'] as const;
+  const groups = ['llm', 'deepseek', 'asr', 'analysis', 'tools'] as const;
+  const TESTABLE: ReadonlyArray<'llm' | 'deepseek' | 'asr' | 'tools'> = ['llm', 'deepseek', 'asr', 'tools'];
 
   return (
     <div className="h-full w-full flex flex-col p-12 overflow-y-auto">
@@ -107,8 +108,8 @@ export default function SettingsPanel() {
                       {savingGroup === group ? <Loader2 size={13} strokeWidth={2} className="animate-spin" /> : <Save size={13} strokeWidth={2} />}
                       Save
                     </button>
-                    {(group === 'llm' || group === 'asr' || group === 'tools') && (
-                      <button onClick={() => handleTest(group as 'llm' | 'asr' | 'tools')} disabled={testing === group}
+                    {TESTABLE.includes(group as 'llm' | 'deepseek' | 'asr' | 'tools') && (
+                      <button onClick={() => handleTest(group as 'llm' | 'deepseek' | 'asr' | 'tools')} disabled={testing === group}
                         className="flex items-center gap-2 px-4 py-2 border border-[#121212]/20 hover:bg-[#121212]/5 transition-colors disabled:opacity-50 text-[10px] uppercase tracking-widest font-bold">
                         {testing === group ? <Loader2 size={13} strokeWidth={2} className="animate-spin" /> : <Zap size={13} strokeWidth={2} />}
                         {group === 'tools' ? 'Test FFmpeg' : 'Test Connection'}

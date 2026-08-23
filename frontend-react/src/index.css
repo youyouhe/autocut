@@ -30,3 +30,9 @@ body {
 .markdown-body ul, .markdown-body ol { padding-left: 1.3em; margin-bottom: 0.6em; }
 .markdown-body li { margin-bottom: 0.2em; }
 .markdown-body strong { font-weight: 600; }
+
+/* 图片 hover 大图预览淡入 */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
