@@ -409,7 +409,9 @@ def enqueue_render(task_id, draft_dir, draft_name):
         pub_url, pub_token = config.RENDER_SERVICE_URL, config.RENDER_SERVICE_TOKEN
         has_user_node = bool(user_render_store.get(uid))  # 用户真配了自有节点?
 
-        if has_user_node and user_url != pub_url:
+        # 同址不同凭据也算用户路径: 公共节点可能就配置成用户节点同一台 (此时用户 token
+        # 才是有效的, 公共 token 可能为空 → 走公共路径会 401)
+        if has_user_node and (user_url != pub_url or (user_token and not pub_token)):
             # 先打用户自有节点
             ok, remote_or_err, st = _submit_to_node(task_id, zip_path, draft_name, uid, user_url, user_token)
             if ok:
