@@ -31,8 +31,18 @@ _INJECTION_PATTERNS = (
 
 @input_guardrail(name='输入守卫')
 async def _input_guard(ctx, agent, input_data) -> GuardrailFunctionOutput:
-    """超长消息 / 注入越权检测. 本地规则, 不耗 LLM token."""
-    text = input_data if isinstance(input_data, str) else str(input_data)
+    """超长消息 / 注入越权检测. 本地规则, 不耗 LLM token.
+    注意: 带 session 的 run, input_data 是 [历史items..., 新消息] —— 只检查
+    最后一条 user 消息 (检查整段历史会把长会话误判成"消息超长", 实测误拦)."""
+    if isinstance(input_data, str):
+        text = input_data
+    else:
+        text = ''
+        for it in reversed(input_data if isinstance(input_data, list) else []):
+            if isinstance(it, dict) and it.get('role') == 'user' and it.get('content'):
+                c = it['content']
+                text = c if isinstance(c, str) else str(c)
+                break
     low = text.lower()
     if len(text) > MAX_INPUT_CHARS:
         return GuardrailFunctionOutput(
