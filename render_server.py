@@ -360,6 +360,40 @@ def enqueue_render(task_id, draft_dir, draft_name):
             pass
 
 
+def _purge_stale_mp4(cur_task):
+    """同一草稿 (draft_name) 只保留最新成片: 删除更早任务缓存的本的 mp4 文件.
+    只删本地缓存目录 (VIDEOS) 下本系统命名 (rd_*) 的文件, 不碰用户自有视频."""
+    try:
+        dn = cur_task.get('draft_name')
+        if not dn or not cur_task.get('mp4_path'):
+            return
+        cur_name = os.path.basename(cur_task['mp4_path'])
+        cur_created = cur_task.get('created') or 0
+        with TASK_LOCK:
+            others = [v for v in tasks.values()
+                      if v.get('draft_name') == dn and v.get('mp4_path')
+                      and v.get('task_id') != cur_task.get('task_id')]
+        removed = 0
+        for o in others:
+            p = o.get('mp4_path') or ''
+            base = os.path.basename(p)
+            # 更早的任务才删 (created 相同/未知时也删, 保持单一成片)
+            if (o.get('created') or 0) > cur_created:
+                continue
+            if os.path.isfile(p) and base.startswith('rd_') and os.path.dirname(p) == VIDEOS:
+                try:
+                    os.remove(p)
+                    removed += 1
+                except OSError:
+                    pass
+            o.pop('mp4_path', None)   # 记录里也摘掉, 前端不再指向已删文件
+            _persist(o.get('task_id'))
+        if removed:
+            print('[render] 草稿 %s 清理旧成片 %d 个 (仅保留 %s)' % (dn, removed, cur_name), flush=True)
+    except Exception as e:
+        print('[render] 清理旧成片失败: %s' % e, flush=True)
+
+
 def _sync_remote_status(task_id):
     """代理拉取远程任务状态, 回写本地影子任务。done 时触发 mp4 拉取到本地缓存。
 
@@ -405,6 +439,8 @@ def _sync_remote_status(task_id):
                             if chunk:
                                 out.write(chunk)
                     t['mp4_path'] = local_mp4
+                    # 同一草稿只保留最新成片: 删除该草稿更早任务的 mp4, 避免反复渲染堆满磁盘
+                    _purge_stale_mp4(t)
                 else:
                     t['error'] = 'download from render_service failed: %s' % rr.status_code
             except Exception as e:
