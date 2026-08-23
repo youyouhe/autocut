@@ -363,6 +363,21 @@ def focus_jianying():
     time.sleep(0.4)
     return hwnd
 
+def press_escape():
+    """发一个 ESC 键 (目标桌面上下文). 用于清掉剪映里卡住的隐藏弹窗 ——
+    实测: 导出点击 ok 但弹窗不出现, 常是上一次的 modal 还挂着 (不可见),
+    不 ESC 掉它, 重试多少次点导出都弹不出新窗口 (4 连败日志全是同一形态)."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        with _on_target_desktop():
+            user32.keybd_event(0x1B, 0, 0, 0)       # VK_ESCAPE down
+            user32.keybd_event(0x1B, 0, 0x0002, 0)  # up
+        time.sleep(0.4)
+    except Exception:
+        pass
+
+
 def _activate_hwnd(hwnd):
     """把指定 HWND 拉到前台/激活 (桌面模式下临时切到目标桌面操作, 见 _on_target_desktop).
     新弹出的弹窗(如导出确认框)从未被 SetForegroundWindow 激活过, focusWindow() 一直是 null,
@@ -1193,7 +1208,18 @@ class Driver:
             if new_show:
                 log('  ✓ 导出窗口出现 (showCount %d->%d)' % (base_show, new_show))
             else:
-                log('  ⚠ 导出窗口未出现, 重试')
+                # 恢复动作: 光重试同样的点击没用 (卡死状态会 4 连败) ——
+                # ESC 清掉可能挂着的隐藏 modal, 重新拉起/激活编辑器窗口再试.
+                log('  ⚠ 导出窗口未出现, 恢复后重试 (ESC 清残留弹窗 + 重激活窗口)')
+                press_escape()
+                if not DESKTOP_MODE:
+                    focus_jianying()
+                else:
+                    hwnd = find_jy_hwnd()
+                    if hwnd:
+                        _activate_hwnd(hwnd)
+                if attempt >= 1:
+                    resize_jianying_settled()  # 第 2 次起再把窗口拉回校准尺寸
                 time.sleep(1); continue
             emit_progress('export', 50)
             time.sleep(0.8)  # 等 modal 完全显示
