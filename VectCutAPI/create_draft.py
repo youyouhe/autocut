@@ -1,4 +1,5 @@
 import uuid
+import os
 import pyJianYingDraft as draft
 import time
 from draft_cache import DRAFT_CACHE, update_cache
@@ -33,6 +34,18 @@ def create_draft(width=1080, height=1920, user_id=None):
 
     # Store in global cache
     update_cache(draft_id, script)
+
+    # 立即落盘 draft_content.json (即使还是空草稿). 不落盘的话:
+    # /api/drafts 列表 (按 draft_content.json 扫描) 看不到新建的空草稿, 用户无法在
+    # Drafts 面板选中/激活它; 服务重启后空草稿直接消失. 完整保存仍由 save_draft 做.
+    try:
+        vc_dir = os.path.dirname(os.path.abspath(__file__))
+        ddir = os.path.join(vc_dir, draft_id)
+        os.makedirs(ddir, exist_ok=True)
+        with open(os.path.join(ddir, 'draft_content.json'), 'w', encoding='utf-8') as f:
+            f.write(script.dumps())
+    except Exception as e:
+        print(f'[create_draft] 空草稿预落盘失败 (不影响缓存使用, save_draft 时会完整保存): {e}', flush=True)
 
     return script, draft_id
 
