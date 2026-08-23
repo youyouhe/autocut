@@ -559,6 +559,15 @@ export function saveSettings(values: Record<string, string | boolean>): Promise<
   });
 }
 export interface TestResult { ok: boolean; error?: string; model?: string; status?: number; detail?: string }
+export interface RenderNodeInfo {
+  node_id: string; online: boolean; stale_seconds?: number;
+  desktops_total?: number; desktops_busy?: number; desktops_free?: number;
+  queue_size?: number; running_tasks?: string[]; note?: string;
+}
+export function getRenderNodes(): Promise<RenderNodeInfo[]> {
+  return jsonFetch<RenderNodeInfo[]>('/api/render-nodes');
+}
+
 export function testSetting(target: 'llm' | 'deepseek' | 'asr' | 'tools', overrides: Record<string, string | boolean>): Promise<TestResult> {
   return jsonFetch<TestResult>('/api/settings/test', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

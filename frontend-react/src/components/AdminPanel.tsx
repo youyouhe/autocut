@@ -25,10 +25,14 @@ export default function AdminPanel() {
   const [newPwd, setNewPwd] = useState('');
   const [pwdErr, setPwdErr] = useState<string | null>(null);
   const [pwdBusy, setPwdBusy] = useState(false);
+  const [nodes, setNodes] = useState<any[]>([]);
 
   const refresh = async () => {
     setLoading(true); setError(null);
-    try { setUsers(await api.listUsers()); }
+    try {
+      setUsers(await api.listUsers());
+      api.getRenderNodes().then(setNodes).catch(() => {});
+    }
     catch (e: any) { setError(e.message || '加载用户失败'); }
     finally { setLoading(false); }
   };
@@ -171,6 +175,34 @@ export default function AdminPanel() {
           </table>
         </div>
       )}
+
+      {/* 渲染节点 (心跳互通) */}
+      <div className="mt-10">
+        <h2 className="text-lg font-bold tracking-tight flex items-center gap-2 mb-3">
+          渲染节点 <span className="text-[10px] uppercase tracking-widest opacity-50 font-normal mt-0.5">心跳互通 · 30s 一次, 120s 无心跳判失联</span>
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {nodes.map(n => (
+            <div key={n.node_id} className={`border p-4 ${n.online ? 'border-emerald-600/40 bg-emerald-50/40' : 'border-red-600/40 bg-red-50/40'}`}>
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-mono text-xs truncate" title={n.node_id}>{n.node_id}</span>
+                <span className={`text-[10px] uppercase tracking-widest font-bold px-2 py-0.5 ${n.online ? 'text-emerald-700 bg-emerald-100' : 'text-red-700 bg-red-100'}`}>
+                  {n.online ? '● 在线' : '○ 离线'}
+                </span>
+              </div>
+              <div className="text-[10px] uppercase tracking-widest opacity-60 space-y-1">
+                {n.desktops_total !== undefined ? (
+                  <div>桌面池 {n.desktops_busy}/{n.desktops_total} 忙 · 队列 {n.queue_size ?? 0}</div>
+                ) : (
+                  <div className="opacity-70 normal-case">{n.note || '无心跳数据'}</div>
+                )}
+                <div>{n.running_tasks?.length ? `渲染中: ${n.running_tasks.length} 个任务` : '空闲'}</div>
+              </div>
+            </div>
+          ))}
+          {nodes.length === 0 && <div className="text-xs opacity-50">暂无节点信息</div>}
+        </div>
+      </div>
 
       {/* 新建用户弹层 */}
       {showCreate && (

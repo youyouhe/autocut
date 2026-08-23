@@ -75,16 +75,88 @@ def _token_gate():
 import queue
 tasks = {}
 TASK_LOCK = threading.Lock()
+
+# === 与 web 后端的消息互通 (心跳 + 状态推送) ===
+# WEB_BASE_URL (env): web 后端地址, 如 http://192.168.8.107:9010. 未配置则互通关闭.
+WEB_BASE_URL = os.environ.get('WEB_BASE_URL', '').rstrip('/')
+def _hostname():
+    try:
+        import socket
+        return socket.gethostname()
+    except Exception:
+        return 'node'
+
+NODE_ID = os.environ.get('RENDER_NODE_ID') or ('%s:%d' % (_hostname(), config.RENDER_SERVICE_PORT))
+
+
+def _post_web(path, payload, timeout=4):
+    """把消息 POST 给 web 后端 (失败静默 —— 互通是增强, 不能影响渲染主流程)."""
+    if not WEB_BASE_URL:
+        return False
+    try:
+        headers = {}
+        if config.RENDER_SERVICE_TOKEN:
+            headers['X-Render-Token'] = config.RENDER_SERVICE_TOKEN
+        import requests
+        requests.post(WEB_BASE_URL + path, json=payload, headers=headers, timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def _node_snapshot():
+    """节点当前状态快照 (心跳内容)."""
+    with TASK_LOCK:
+        running = [tid for tid, t in tasks.items() if t.get('status') == 'rendering']
+        queued = RENDER_QUEUE.qsize() if 'RENDER_QUEUE' in globals() else 0
+    total = len(config.DESKTOP_NAMES)
+    busy = sum(1 for info in desktop_pool.values() if info.get('busy'))
+    return {
+        'node_id': NODE_ID,
+        'ts': time.time(),
+        'desktops_total': total,
+        'desktops_busy': busy,
+        'desktops_free': max(0, total - busy),
+        'queue_size': queued,
+        'running_tasks': running,
+        'version': '2026-08-24.1',
+    }
+
+
+def heartbeat_loop():
+    """每 30s 向 web 后端报一次心跳. web 侧 120s 收不到 → 判定节点失联,
+    把该节点的进行中任务标记 error (否则节点被关掉任务会永远 rendering)."""
+    while True:
+        _post_web('/internal/render-heartbeat', _node_snapshot(), timeout=3)
+        time.sleep(30)
+
+
+def _notify_task_event(task_id):
+    """任务状态变化 → 推送给 web 后端 (fire-and-forget 线程, 不阻塞渲染 worker)."""
+    if not WEB_BASE_URL:
+        return
+    def _go():
+        with TASK_LOCK:
+            t = dict(tasks.get(task_id) or {})
+        if t:
+            t['node_id'] = NODE_ID
+            _post_web('/internal/render-event', t)
+    threading.Thread(target=_go, daemon=True).start()
+
 RENDER_QUEUE = queue.Queue()
 
 
 def _persist(task_id):
-    """落盘任务状态 (task_store, 失败不阻塞)."""
+    """落盘任务状态 (task_store, 失败不阻塞) + 推送给 web 后端 (消息互通)."""
     try:
         with TASK_LOCK:
             t = tasks.get(task_id)
         if t:
             task_store.upsert(t)
+    except Exception:
+        pass
+    try:
+        _notify_task_event(task_id)
     except Exception:
         pass
 
@@ -416,6 +488,11 @@ if __name__ == '__main__':
 
     # 过期任务清理
     threading.Thread(target=task_cleanup_loop, daemon=True).start()
+
+    # 心跳 (与 web 后端消息互通; WEB_BASE_URL 未配置时为 no-op)
+    if WEB_BASE_URL:
+        threading.Thread(target=heartbeat_loop, daemon=True).start()
+        print('[hb] 心跳已启动 → %s (node_id=%s)' % (WEB_BASE_URL, NODE_ID), flush=True)
 
     # 剪映强更看守 (env UPGRADE_WATCHDOG=0 关闭). 见 upgrade_watchdog.py 模块头.
     if os.environ.get('UPGRADE_WATCHDOG', '1') != '0':

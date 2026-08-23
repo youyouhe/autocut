@@ -142,6 +142,9 @@ def _global_login_gate():
     # 健康检查 / 认证端点 / 静态资源放行
     if path == '/health' or path.startswith('/api/auth/') or path.startswith('/static/'):
         return None
+    # 渲染节点回调 (心跳/事件): 自带 X-Render-Token 认证 (见 _render_node_auth), 不走 session
+    if path.startswith('/internal/render-'):
+        return None
     # 根路径与无扩展名 catch-all (SPA 入口 / React Router 路径) 放行, 让前端加载
     if path == '/' or (path == '/index.html'):
         return None
@@ -198,6 +201,111 @@ def _draft_ownership_gate():
 # 保留的本地结构 (供 render_status/render_download/render_list 影子缓存用):
 tasks = {}
 TASK_LOCK = threading.Lock()
+
+# === 渲染节点消息互通 (心跳 + 事件推送接收端) ===
+# 节点 (render_service) 每 30s POST /internal/render-heartbeat, 任务状态变化 POST /internal/render-event.
+# 失联判定: 节点 120s 无心跳 → 该节点进行中任务标记 error (节点被关掉不再永远 rendering).
+_RENDER_NODES = {}          # node_id -> {last_heartbeat, ...snapshot}
+_NODE_STALE_SEC = 120
+
+
+def _render_node_auth():
+    """节点回调认证: 配置了 RENDER_SERVICE_TOKEN 时校验 X-Render-Token; 未配置放行(内网)."""
+    expected = config.RENDER_SERVICE_TOKEN
+    if not expected:
+        return True
+    import hmac
+    return hmac.compare_digest(request.headers.get('X-Render-Token', ''), expected)
+
+
+@app.route('/internal/render-heartbeat', methods=['POST'])
+def internal_render_heartbeat():
+    if not _render_node_auth():
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.json or {}
+    nid = data.get('node_id') or 'unknown'
+    data['last_heartbeat'] = time.time()
+    data['online'] = True
+    _RENDER_NODES[nid] = data
+    return jsonify({'ok': True})
+
+
+@app.route('/internal/render-event', methods=['POST'])
+def internal_render_event():
+    """节点推送的任务状态变化 → 更新本地影子任务 (不用等前端轮询)."""
+    if not _render_node_auth():
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.json or {}
+    remote_tid = data.get('task_id')
+    if not remote_tid:
+        return jsonify({'error': 'task_id required'}), 400
+    with TASK_LOCK:
+        local = None
+        for t in tasks.values():
+            if t.get('remote_task_id') == remote_tid:
+                local = t
+                break
+    if local is None:
+        return jsonify({'ok': False, 'note': 'no shadow task (可能是别的 web 后端的任务)'}), 200
+    # 同步状态字段
+    with TASK_LOCK:
+        for k in ('status', 'error', 'mp4_name', 'progress', 'duration', 'desktop', 'started_at'):
+            if data.get(k) is not None:
+                local[k] = data[k]
+        local['node_event_at'] = time.time()
+    _persist(local['task_id'])
+    # done → 后台拉取 mp4 到本地 (复用轮询路径的下载逻辑)
+    if local.get('status') == 'done' and not local.get('mp4_path'):
+        threading.Thread(target=_sync_remote_status, args=(local['task_id'],), daemon=True).start()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/render-nodes', methods=['GET'])
+@login_required
+def api_render_nodes():
+    """渲染节点状态列表 (心跳注册表 + 派生在线状态)."""
+    now = time.time()
+    out = []
+    for nid, n in _RENDER_NODES.items():
+        d = dict(n)
+        d['online'] = (now - n.get('last_heartbeat', 0)) < _NODE_STALE_SEC
+        d['stale_seconds'] = int(now - n.get('last_heartbeat', 0))
+        out.append(d)
+    # 也把配置过但从未心跳的公共节点列出来 (标记 offline)
+    known = {n.get('base_url', n.get('url', '')) for n in out}
+    if config.RENDER_SERVICE_URL not in known:
+        out.append({'node_id': config.RENDER_SERVICE_URL, 'online': False,
+                    'note': '公共节点 (从未心跳 — 未配置 WEB_BASE_URL 或节点离线)'})
+    out.sort(key=lambda x: (not x.get('online'), x.get('node_id', '')))
+    return jsonify(out)
+
+
+def _node_watchdog_loop():
+    """每 30s: 心跳超时的节点 → 其进行中影子任务标记 error(失联)."""
+    while True:
+        time.sleep(30)
+        try:
+            now = time.time()
+            stale_nodes = {nid for nid, n in _RENDER_NODES.items()
+                           if now - n.get('last_heartbeat', 0) > _NODE_STALE_SEC}
+            if not stale_nodes:
+                continue
+            with TASK_LOCK:
+                affected = []
+                for t in tasks.values():
+                    if t.get('status') not in ('rendering', 'queued'):
+                        continue
+                    url = (t.get('render_url') or '').rstrip('/')
+                    nid = t.get('render_node_id') or url
+                    if nid and (nid in stale_nodes or any(nid.endswith(s.split(':')[-1]) for s in stale_nodes)):
+                        t['status'] = 'error'
+                        t['error'] = '渲染节点失联 (心跳超时 %ds) — 节点可能被关闭或断网' % _NODE_STALE_SEC
+                        affected.append(t['task_id'])
+            for tid in affected:
+                _persist(tid)
+                print('[render-node] 任务 %s 因节点失联标记 error' % tid, flush=True)
+        except Exception as e:
+            print('[render-node] watchdog 异常: %s' % e, flush=True)
 
 
 def _new_task(task_id, **fields):
@@ -307,6 +415,7 @@ def enqueue_render(task_id, draft_dir, draft_name):
                     tasks[task_id]['status'] = status
                     tasks[task_id]['remote_task_id'] = remote_id
                     tasks[task_id]['render_url'] = user_url
+                    tasks[task_id]['render_node_id'] = user_url
                     tasks[task_id]['render_token'] = user_token
                     tasks[task_id]['fallback_reason'] = None
                 _persist(task_id)
@@ -322,6 +431,7 @@ def enqueue_render(task_id, draft_dir, draft_name):
                     tasks[task_id]['status'] = status
                     tasks[task_id]['remote_task_id'] = remote_id
                     tasks[task_id]['render_url'] = pub_url
+                    tasks[task_id]['render_node_id'] = pub_url
                     tasks[task_id]['render_token'] = pub_token
                     tasks[task_id]['fallback_reason'] = fallback_reason
                 _persist(task_id)
@@ -344,6 +454,7 @@ def enqueue_render(task_id, draft_dir, draft_name):
                     tasks[task_id]['status'] = status
                     tasks[task_id]['remote_task_id'] = remote_id
                     tasks[task_id]['render_url'] = pub_url
+                    tasks[task_id]['render_node_id'] = pub_url
                     tasks[task_id]['render_token'] = pub_token
                     tasks[task_id]['fallback_reason'] = None
                 _persist(task_id)
@@ -2306,6 +2417,7 @@ if __name__ == '__main__':
 
     # 过期任务清理
     threading.Thread(target=task_cleanup_loop, daemon=True).start()
+    threading.Thread(target=_node_watchdog_loop, daemon=True).start()  # 节点失联检测
 
     # LocalSend 接收端: 按需启动 (前端"接收"按钮触发, 不随服务常驻)
     print('[localsend] 接收端待命 (前端点"接收"按钮启动), 端口 53317', flush=True)
