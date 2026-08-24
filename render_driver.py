@@ -1460,7 +1460,9 @@ class Driver:
                 log('  草稿未打开(或编辑器未就绪), 重试')
                 time.sleep(1)
             if not opened:
-                log('草稿卡片8次未打开, 中止'); self.injected_name = draft_name; return False
+                log('草稿卡片8次未打开, 中止')
+                capture_failure_screen('card_fail')  # 诊断: 看首页真实状态 (幽灵卡/横幅/列表未刷新)
+                self.injected_name = draft_name; return False
         else:
             log('点放大镜'); self.click_global2(caps['search_btn']['lx'], caps['search_btn']['ly'])
             time.sleep(1)
