@@ -40,6 +40,81 @@ def build_asset_path(draft_folder: str, draft_id: str, asset_type: str, material
     """
     return build_draft_asset_path(draft_folder, draft_id, asset_type, material_name)
 
+def _sanitize_script_for_export(script):
+    """导出前清洗: 悬挂引用 + 素材表重复 id.
+    load_template → save 的往返中, imported_materials 的动画/滤镜素材不会合并进
+    script.materials, 但 import_track 会给 segments 重建 extra_material_refs ——
+    不清掉就导出"引用存在但素材缺失"的毒草稿, 剪映首页直接不显示该卡片 (无报错).
+    素材表重复 id 同理 (多次 save/merge 循环会指数复制素材条目)."""
+    import json as _json
+    mats = script.materials
+    # 1. 全量 id 集合 (script.materials + imported_materials)
+    valid_ids = set()
+    def _collect(obj):
+        if isinstance(obj, dict):
+            for f in ('id', 'material_id', 'global_id', 'animation_id', 'effect_id', 'fade_id', 'resource_id'):
+                if obj.get(f):
+                    valid_ids.add(obj[f])
+        else:
+            for f in ('id', 'material_id', 'global_id', 'animation_id', 'effect_id', 'fade_id', 'resource_id'):
+                v = getattr(obj, f, None)
+                if v:
+                    valid_ids.add(v)
+    for list_name in ('videos', 'audios', 'stickers', 'texts', 'animations', 'video_effects',
+                      'audio_effects', 'audio_fades', 'speeds', 'masks', 'transitions',
+                      'filters', 'canvases'):
+        for item in (getattr(mats, list_name, None) or []):
+            _collect(item)
+    imported = getattr(script, 'imported_materials', {}) or {}
+    for mlist in imported.values():
+        for item in (mlist or []):
+            _collect(item)
+
+    # 2. 清 segments 的悬挂 extra_material_refs (普通轨 + 导入轨)
+    scrubbed = 0
+    all_tracks = list(script.tracks.values()) + list(getattr(script, 'imported_tracks', []) or [])
+    for track in all_tracks:
+        for seg in (getattr(track, 'segments', None) or []):
+            refs = getattr(seg, 'extra_material_refs', None)
+            if refs:
+                keep = [r for r in refs if r in valid_ids]
+                if len(keep) != len(refs):
+                    scrubbed += len(refs) - len(keep)
+                    seg.extra_material_refs = keep
+
+    # 3. 素材表去重 (按 id 保留第一个; script.materials 与 imported_materials 各自内部)
+    deduped = 0
+    def _dedupe_list(lst):
+        nonlocal deduped
+        seen, out = set(), []
+        for item in lst:
+            if isinstance(item, dict):
+                mid = item.get('id') or item.get('material_id') or item.get('global_id')
+            else:
+                mid = (getattr(item, 'id', None) or getattr(item, 'material_id', None)
+                       or getattr(item, 'global_id', None))
+            if mid is not None:
+                if mid in seen:
+                    deduped += 1
+                    continue
+                seen.add(mid)
+            out.append(item)
+        return out
+    for list_name in ('videos', 'audios', 'stickers', 'texts', 'animations', 'video_effects',
+                      'audio_effects', 'audio_fades', 'speeds', 'masks', 'transitions',
+                      'filters', 'canvases'):
+        lst = getattr(mats, list_name, None)
+        if lst:
+            setattr(mats, list_name, _dedupe_list(lst))
+    for k, mlist in imported.items():
+        if isinstance(mlist, list):
+            imported[k] = _dedupe_list(mlist)
+
+    if scrubbed or deduped:
+        logger.info(f'导出前清洗: 悬挂引用 -{scrubbed}, 重复素材 -{deduped}')
+    return scrubbed, deduped
+
+
 def save_draft_background(draft_id, draft_folder, task_id):
     """Background save draft to OSS"""
     try:
@@ -300,6 +375,9 @@ def save_draft_background(draft_id, draft_folder, task_id):
         update_task_field(task_id, "message", "Saving draft information")
         logger.info(f"Task {task_id} progress 70%: Saving draft information.")
         
+        # 导出前清洗: 悬挂引用 + 重复素材 (load_template 往返的副产品, 不清洗会出毒草稿)
+        _sanitize_script_for_export(script)
+
         written_files = write_profile_content(draft_profile, draft_dir, script.dumps(draft_profile))
         logger.info(f"Draft information has been saved to {[str(path) for path in written_files]}.")
 

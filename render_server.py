@@ -787,15 +787,18 @@ def render_by_draft_id(draft_id):
     except Exception as e:
         print('[render] 预保存草稿失败(继续): %s' % e, flush=True)
 
-    # 空草稿拦截: 0 轨道直接报清晰错误 (渲染空时间线剪映会拒导出, 表现为"点击失败")
+    # 草稿完整性校验 (draft_validate): 悬挂引用/素材缺失/零时长段等问题草稿
+    # 剪映会静默拒收 (首页不显示卡片/弹"草稿丢失"), 在发起端就拦下并给明确原因.
     try:
-        _cp = os.path.join(_resolve_draft_dir(draft_id) or '', 'draft_content.json')
-        if _cp and os.path.isfile(_cp):
-            _c = json.load(open(_cp, encoding='utf-8'))
-            if not (_c.get('tracks') or []):
-                return jsonify({'error': '草稿是空的 (0 条轨道) — 请先添加素材再渲染'}), 400
+        from draft_validate import validate_draft_dir
+        _dd = _resolve_draft_dir(draft_id)
+        if _dd:
+            _ok, _errors, _warnings = validate_draft_dir(_dd)
+            if not _ok:
+                return jsonify({'error': '草稿完整性校验失败: ' + '; '.join(_errors[:5]),
+                                'validation_errors': _errors, 'warnings': _warnings}), 400
     except Exception as e:
-        print('[render] 空草稿检查失败(继续): %s' % e, flush=True)
+        print('[render] 草稿校验异常(继续): %s' % e, flush=True)
     # 先在剪映草稿目录按文件夹名直接找
     draft_dir = os.path.join(DRAFT_ROOT, draft_id)
     if not os.path.isdir(draft_dir):
@@ -976,7 +979,32 @@ def _warmup_draft(draft_id):
         return False
     try:
         from draft_cache import DRAFT_CACHE, update_cache
+        # 缓存有效性检查: 磁盘文件比缓存对象新 (外部直接改过 draft_content.json,
+        # 如手动清理/其他进程写入) → 丢弃陈旧缓存重新载入. 否则 warmup 幂等会把
+        # 陈旧版本当作最新, 后续 save 用脏缓存覆盖掉磁盘上的干净修改 (2026-08-24 实锤).
         if draft_id in DRAFT_CACHE:
+            cp0 = None
+            d0 = _resolve_draft_dir(draft_id)
+            if d0:
+                for name in ('draft_content.json', 'draft_info.json'):
+                    p0 = os.path.join(d0, name)
+                    if os.path.isfile(p0):
+                        cp0 = p0
+                        break
+            if cp0 is None:
+                return True
+            cached = DRAFT_CACHE[draft_id]
+            cache_mtime = getattr(cached, '_cache_loaded_mtime', None)
+            if cache_mtime is not None and os.path.getmtime(cp0) <= cache_mtime:
+                return True
+            if cache_mtime is None:
+                # 老缓存没有时间戳, 无法判断新旧 — 保守重载 (一次 IO 换正确性)
+                pass
+            import pyJianYingDraft as _draft
+            script = _draft.Script_file.load_template(cp0)
+            script._cache_loaded_mtime = os.path.getmtime(cp0)
+            update_cache(draft_id, script)
+            print('[warmup] 磁盘版本较新, 已重载: %s' % draft_id, flush=True)
             return True
         # 找磁盘上的 draft_content.json / draft_info.json
         draft_dir = _resolve_draft_dir(draft_id)
@@ -989,6 +1017,7 @@ def _warmup_draft(draft_id):
             return False
         import pyJianYingDraft as _draft
         script = _draft.Script_file.load_template(cp)
+        script._cache_loaded_mtime = os.path.getmtime(cp)
         update_cache(draft_id, script)
         print('[warmup] 冷草稿已载入缓存: %s (tracks=%d)' % (
             draft_id, len(script.tracks) + len(getattr(script, 'imported_tracks', []) or [])), flush=True)
