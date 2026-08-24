@@ -400,12 +400,13 @@ def _clean_draft_journal():
             pass
 
 
-def _sweep_zombie_drafts():
+def _sweep_zombie_drafts(keep=None):
     """启动剪映前清扫残留的 rd* 注入草稿. 上次渲染的清理发生在剪映仍开着时, rmtree 常被
     编辑器占用的句柄部分挡掉(ignore_errors 静默失败), 留下空壳文件夹 — 实测 2 天积了 14 个,
-    首页一堆无预览坏卡片, 还会让剪映启动弹"草稿丢失". 启动前没有任何句柄, 必删得掉."""
+    首页一堆无预览坏卡片, 还会让剪映启动弹"草稿丢失". 启动前没有任何句柄, 必删得掉.
+    keep: 豁免一个草稿名 (预注入模式: render-draft 在启动前刚注入的草稿不能被清掉)."""
     try:
-        names = [d for d in os.listdir(DRAFT_ROOT) if d.startswith('rd')]
+        names = [d for d in os.listdir(DRAFT_ROOT) if d.startswith('rd') and d != keep]
     except OSError:
         names = []
     for name in names:
@@ -426,6 +427,7 @@ def find_main_pid():
     return int(out) if out.isdigit() else None
 
 CURRENT_HDESK = None  # 桌面模式下, start_jianying_in_desktop() 拿到的目标桌面句柄 (供跨桌面操作用)
+PRE_INJECT_NAME = None  # 预注入草稿名: main() 在剪映启动前注入, render_draft 直接复用 (见 desktop 启动块注释)
 
 import contextlib
 
@@ -531,7 +533,7 @@ DESKTOP_MODE = False
 # CreateDesktop 新建一个空 'JYRender' 桌面, 与 render_server 用的 'JYRender_0' 不一致.
 JY_DESKTOP = 'JYRender_0'
 
-def start_jianying_in_desktop(desktop=JY_DESKTOP):
+def start_jianying_in_desktop(desktop=JY_DESKTOP, keep_draft=None):
     """在独立桌面启动剪映, 返回 (pid, hDesk). 剪映在该桌面是前台, focusWindow 有效, 主桌面不被打扰."""
     import ctypes
     from ctypes import wintypes
@@ -555,7 +557,7 @@ def start_jianying_in_desktop(desktop=JY_DESKTOP):
     exe = config.find_jianying_exe()
     if not exe:
         log('未找到 JianyingPro.exe (检查 config.JY_APP_BASE)'); return None, hDesk
-    _sweep_zombie_drafts()  # 趁剪映没起, 清掉上次没删干净的 rd* 空壳
+    _sweep_zombie_drafts(keep=keep_draft)  # 趁剪映没起, 清掉上次没删干净的 rd* 空壳
     # STARTUPINFO 指定 lpDesktop
     class STARTUPINFO(ctypes.Structure):
         _fields_ = [('cb', wintypes.DWORD),('lpReserved', wintypes.LPWSTR),('lpDesktop', wintypes.LPWSTR),
@@ -1421,16 +1423,26 @@ class Driver:
 
         # 1. 注入草稿 (用唯一英文名, 避免搜索歧义 + 键盘输入简单)
         src_name = os.path.basename(os.path.abspath(src_draft_dir))
-        if draft_name is None:
-            draft_name = 'rd%d' % int(time.time() * 1000)  # 纯英文数字, 唯一
+        global PRE_INJECT_NAME
+        pre = PRE_INJECT_NAME
+        PRE_INJECT_NAME = None
+        if pre:
+            # main() 已在剪映启动前注入 (预注入模式): 免运行中注入的目录监视竞态
+            draft_name = pre
+            log('使用预注入草稿: %s (剪映启动前已落位)' % draft_name)
+        else:
+            if draft_name is None:
+                draft_name = 'rd%d' % int(time.time() * 1000)  # 纯英文数字, 唯一
         if search_term is None:
             search_term = draft_name
-        if not inject_draft(src_draft_dir, draft_name):
-            log('中止: 草稿素材缺失, 导出必被剪映拒绝 (原因见上方 ABORT 行)')
-            self.injected_name = draft_name  # finally 杀完剪映后统一清理
-            return False
+        if not pre:
+            if not inject_draft(src_draft_dir, draft_name):
+                log('中止: 草稿素材缺失, 导出必被剪映拒绝 (原因见上方 ABORT 行)')
+                self.injected_name = draft_name  # finally 杀完剪映后统一清理
+                return False
+            time.sleep(2)  # 等剪映实时识别
+        self.injected_name = draft_name  # finally 杀完剪映后统一清理 (预注入的同样要清)
         emit_progress('inject', 10)
-        time.sleep(2)  # 等剪映实时识别
 
         # dev 程序化
         st = self.script.exports_sync.status()
@@ -1566,7 +1578,7 @@ class Driver:
         return ok
 
 def main():
-    global DESKTOP_MODE, CURRENT_HDESK
+    global DESKTOP_MODE, CURRENT_HDESK, PRE_INJECT_NAME
     mode = sys.argv[1] if len(sys.argv) > 1 else 'calibrate'
     close_after = '--close' in sys.argv
     desktop_mode = '--desktop' in sys.argv
@@ -1604,8 +1616,22 @@ def main():
     if desktop_mode:
         DESKTOP_MODE = True
         if attach_pid is None:
+            # 预注入: render-draft 模式先落草稿再启动剪映. 剪映首页草稿列表在启动时从索引
+            # 加载一次, 运行中注入的草稿依赖目录监视实时拾取 — F盘自定义草稿根下实测间歇性
+            # 失效(注入的卡片永不出现, findcard 8连败 textHits=0, 2026-08-24 下午 16:28 起).
+            # 启动前注入必然进首次扫描, 免竞态. 草稿名规则与 render_draft 内部一致(rd+毫秒).
+            pre = None
+            if mode == 'render-draft':
+                src = next((a for a in sys.argv[2:]
+                            if not a.startswith('--') and os.path.isdir(a)), None)
+                if src:
+                    pre = 'rd%d' % int(time.time() * 1000)
+                    if not inject_draft(src, pre):
+                        log('预注入失败(素材缺失/空草稿), 转由 render_draft 内正式报错')
+                        pre = None
             # 没指定 pid, 自己启动剪映到指定桌面
-            attach_pid, hDesk = start_jianying_in_desktop(desk_name)
+            attach_pid, hDesk = start_jianying_in_desktop(desk_name, keep_draft=pre)
+            PRE_INJECT_NAME = pre
             if not attach_pid:
                 log('桌面启动剪映失败, 中止'); sys.exit(1)
             self_started_pid = attach_pid  # 记录, 渲染完 kill
