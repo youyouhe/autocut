@@ -21,6 +21,20 @@ import tempfile
 from ffmpeg_util import resolve_ffmpeg
 
 
+def _render_bin():
+    """直渲用的 ffmpeg 二进制. 默认 /usr/bin/ffmpeg (发行版稳定构建:
+    autorotate 行为正确 + NVENC 可用). 不用 /usr/local/bin 的 dev 构建 (N-118315),
+    它会把 rotation displaymatrix 错误透传到输出 (画面侧躺, 2026-08-24 实锤).
+    FFMPEG_RENDER_BIN 环境变量可覆盖."""
+    forced = os.environ.get('FFMPEG_RENDER_BIN', '').strip()
+    if forced:
+        return forced
+    for p in ('/usr/bin/ffmpeg', '/bin/ffmpeg'):
+        if os.path.isfile(p):
+            return p
+    return resolve_ffmpeg()
+
+
 # ============================================================ 元素检测
 
 # 剪映场景/人物特效、花字、气泡、贴纸 —— ffmpeg 不可行, 必须回退 GUI
@@ -186,7 +200,7 @@ def render_draft_ffmpeg(draft_dir, out_path, content=None):
             inputs.append({'kind': 'audio', 'path': p, 'seg': s, 'mat': m})
 
     # ---- filter graph ----
-    cmd = [resolve_ffmpeg(), '-y']
+    cmd = [_render_bin(), '-y']
     for it in inputs:
         cmd += ['-i', it['path']]
 
@@ -322,6 +336,12 @@ def render_draft_ffmpeg(draft_dir, out_path, content=None):
     cmd += ['-pix_fmt', 'yuv420p', '-movflags', '+faststart',
             '-metadata:s:v:0', 'rotate=0', out_path]
 
+    # 调试留痕: 完整命令落盘 (排查"服务渲染和手动渲染行为不一致"这类问题时直接对比)
+    try:
+        with open('/tmp/last_render_cmd.txt', 'w', encoding='utf-8') as _f:
+            _f.write('\n'.join(cmd))
+    except Exception:
+        pass
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if r.returncode != 0:
         return False, 'ffmpeg 失败: ' + (r.stderr or '')[-400:]
@@ -405,7 +425,7 @@ def _pick_video_codec():
     if forced:
         return forced
     try:
-        r = subprocess.run([resolve_ffmpeg(), '-hide_banner', '-encoders'],
+        r = subprocess.run([_render_bin(), '-hide_banner', '-encoders'],
                            capture_output=True, text=True, timeout=10)
         if 'h264_nvenc' in (r.stdout or ''):
             # 再确认有 N 卡 (encoder 列出不代表可用)
