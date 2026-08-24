@@ -855,11 +855,59 @@ def render_by_draft_id(draft_id):
         return jsonify({'error': 'not a valid jianying draft (no draft_content.json / draft_info.json)'}), 400
     uid = current_user_id()
     task_id = uuid.uuid4().hex[:8]
+
+    # === 分层渲染: 元素全部可 ffmpeg 直渲的草稿, 本地确定性渲染, 不走剪映 GUI ===
+    # (剪映 GUI 路径的间歇性故障历史见 render_driver/render_service; 特效/贴纸等
+    # 不可行元素才回退节点渲染 — analyze_draft_for_ffmpeg 判定)
+    try:
+        import ffmpeg_renderer as _fr
+        _content = json.load(open(os.path.join(draft_dir, 'draft_content.json'), encoding='utf-8')) \
+            if os.path.isfile(os.path.join(draft_dir, 'draft_content.json')) else None
+        _mode, _reasons = (_fr.analyze_draft_for_ffmpeg(_content) if _content else ('fallback', ['无法读取草稿']))
+    except Exception as e:
+        _mode, _reasons = 'fallback', ['分析异常: %s' % e]
+    if _mode in ('direct', 'approximate'):
+        _new_task(task_id, status='rendering', draft_name=draft_id, draft_dir=draft_dir,
+                  user_id=uid, render_engine='ffmpeg-local',
+                  progress={'stage': 'ffmpeg-direct', 'pct': 10})
+        if _mode == 'approximate':
+            with TASK_LOCK:
+                tasks[task_id]['note'] = '含近似元素(转场/动画暂以硬切/忽略处理): ' + '; '.join(_reasons[:3])
+        threading.Thread(target=_render_local_ffmpeg, args=(task_id, draft_dir, draft_id), daemon=True).start()
+        return jsonify({'task_id': task_id, 'status': 'rendering', 'engine': 'ffmpeg-local',
+                        'poll': '/render/status/%s' % task_id})
+
     _new_task(task_id, status='queued', draft_name=draft_id, draft_dir=draft_dir,
-              user_id=uid)
+              user_id=uid, render_engine='jianying-gui')
     enqueue_render(task_id, draft_dir, draft_id)
     return jsonify({'task_id': task_id, 'status': 'queued',
                     'poll': '/render/status/%s' % task_id})
+
+
+def _render_local_ffmpeg(task_id, draft_dir, draft_name):
+    """后台线程: ffmpeg 本地直渲草稿 → mp4 落 VIDEOS, 影子任务置 done/error."""
+    import ffmpeg_renderer as _fr
+    out_name = 'rd%s_%s.mp4' % (int(time.time()), draft_name[:16])
+    out_path = os.path.join(VIDEOS, out_name)
+    t0 = time.time()
+    try:
+        ok, info = _fr.render_draft_ffmpeg(draft_dir, out_path)
+    except Exception as e:
+        ok, info = False, str(e)
+    with TASK_LOCK:
+        t = tasks.get(task_id)
+        if t is None:
+            return
+        t['duration'] = time.time() - t0
+        if ok and os.path.isfile(out_path):
+            t['status'] = 'done'
+            t['mp4_path'] = out_path
+            t['mp4_name'] = out_name
+            t['progress'] = {'stage': 'done', 'pct': 100}
+        else:
+            t['status'] = 'error'
+            t['error'] = 'ffmpeg 直渲失败: %s' % str(info)[:300]
+    _persist(task_id)
 
 
 @app.route('/health', methods=['GET'])

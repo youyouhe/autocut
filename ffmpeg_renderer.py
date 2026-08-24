@@ -288,8 +288,16 @@ def render_draft_ffmpeg(draft_dir, out_path, content=None):
         cmd += ['-map', a_out, '-c:a', 'aac', '-b:a', '160k']
     if duration > 0:
         cmd += ['-t', f'{duration:.3f}']
-    cmd += ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20',
-            '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out_path]
+    # 编码器: 默认 NVENC 硬件编码 (有 N 卡时, 比 libx264 快 5-10 倍);
+    # FFMPEG_VIDEO_CODEC 可覆盖 (h264_nvenc/hevc_nvenc/libx264); 无 NVENC 自动回退 libx264.
+    vcodec = _pick_video_codec()
+    if vcodec == 'libx264':
+        cmd += ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20']
+    else:
+        # NVENC: 老版 (ffmpeg<5) 无 p1-p7 命名预设, 用 hq; 新版可 FFMPEG_NVENC_PRESET=p4 覆盖
+        preset = os.environ.get('FFMPEG_NVENC_PRESET', 'hq')
+        cmd += ['-c:v', vcodec, '-preset', preset, '-rc', 'vbr', '-cq', '22', '-b:v', '0']
+    cmd += ['-pix_fmt', 'yuv420p', '-movflags', '+faststart', out_path]
 
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if r.returncode != 0:
@@ -366,6 +374,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     with os.fdopen(fd, 'w', encoding='utf-8') as f:
         f.write(body)
     return path
+
+
+def _pick_video_codec():
+    """选视频编码器: FFMPEG_VIDEO_CODEC 环境变量优先; 否则有 NVENC 用 h264_nvenc, 无则 libx264."""
+    forced = os.environ.get('FFMPEG_VIDEO_CODEC', '').strip()
+    if forced:
+        return forced
+    try:
+        r = subprocess.run([resolve_ffmpeg(), '-hide_banner', '-encoders'],
+                           capture_output=True, text=True, timeout=10)
+        if 'h264_nvenc' in (r.stdout or ''):
+            # 再确认有 N 卡 (encoder 列出不代表可用)
+            try:
+                import ctypes
+                subprocess.run(['nvidia-smi', '-L'], capture_output=True, timeout=5)
+                return 'h264_nvenc'
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return 'libx264'
 
 
 def _find_font():
