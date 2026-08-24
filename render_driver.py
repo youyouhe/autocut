@@ -42,9 +42,47 @@ def emit_progress(stage, pct, **extra):
     d.update(extra)
     print('[PROGRESS] %s' % json.dumps(d, ensure_ascii=False), flush=True)
 
+def _find_material_file(new_draft_dir, mname, remote_url=''):
+    """按文件名在三级位置找素材文件, 返回找到的路径或 None.
+    (a) 新草稿自己的 assets/ 递归找 —— 包内子目录不猜(图片在 assets/image/, 视频在
+        assets/video/, 旧代码固定猜 assets/video/ 导致图片素材全部漏配);
+    (b) remote_url 的 basename 去上传根 render_uploads/ 找 (历史上传散文件);
+    (c) render_uploads 其他历史草稿包里找同名文件, 取 mtime 最新 —— 素材名是内容 hash
+        (如 video_72e4fcd1....mp4), 同名即同内容; 后端打包只带本次新上传素材时,
+        引用的历史上传素材靠这条找回."""
+    hit = None
+    for root, _dirs, files in os.walk(new_draft_dir):
+        if mname in files:
+            hit = os.path.join(root, mname)
+            break
+    if hit:
+        return hit
+    rbase = os.path.basename((remote_url or '').replace('\\', '/')).strip()
+    if rbase:
+        p = os.path.join(config.UPLOAD_DIR, rbase)
+        if os.path.isfile(p):
+            return p
+    best = None
+    try:
+        entries = os.listdir(config.UPLOAD_DIR)
+    except OSError:
+        return None
+    for entry in entries:
+        d = os.path.join(config.UPLOAD_DIR, entry)
+        if not os.path.isdir(d) or os.path.abspath(d) == os.path.abspath(new_draft_dir):
+            continue
+        for root, _dirs, files in os.walk(d):
+            if mname in files:
+                p = os.path.join(root, mname)
+                if best is None or os.path.getmtime(p) > os.path.getmtime(best):
+                    best = p
+    return best
+
+
 def inject_draft(src_draft_dir, new_name=None):
     """复制源草稿文件夹到剪映草稿根目录, 改 id/名字/时间(排首页第一).
-    剪映实时监视目录, 会自动识别新草稿. 返回新草稿文件夹路径."""
+    剪映实时监视目录, 会自动识别新草稿. 返回新草稿文件夹路径;
+    素材回填后仍缺文件时返回 None (缺素材导出必被拒, 调用方应直接中止)."""
     import shutil, uuid
     src = os.path.abspath(src_draft_dir)
     src_name = os.path.basename(src)
@@ -74,16 +112,18 @@ def inject_draft(src_draft_dir, new_name=None):
         c = json.load(open(cp, encoding='utf-8'))
         if isinstance(c, dict) and 'id' in c:
             c['id'] = new_id
-        # 关键修复: 剪映导出时, 若视频素材 path/media_path 为空(无法解析素材文件),
-        # 会静默中止导出 —— 点了"导出"确认后弹窗关闭但渲染引擎根本不启动(temp_bytes 全程 0),
-        # 之后重试连导出弹窗都不再弹出(剪映内部卡在失败态), 整个任务误报为点击问题.
-        # 源草稿素材路径为空有两种来源: (a) copy_draft_external 创建时被抹掉, 素材文件还在
-        # 草稿的 assets/video|audio/ 子目录; (b) 生成器只写了 remote_url(原始上传文件名)引用,
-        # 素材文件在服务端上传目录 render_uploads/ 里. 两种都回填成新草稿内/本地的绝对路径
-        # (正斜杠, 与剪映自身格式一致), 让导出能定位素材.
+        # 关键修复: 剪映导出时, 若素材 path/media_path 为空(无法解析素材文件), 点"导出"
+        # 会直接报"素材丢失"拒绝弹导出框 —— 表现为"点了导出但弹窗不出现", 被误判成点击
+        # 自动化问题(2026-08-24 实锤: 连续 export_fail 全是图片素材路径没回填上).
+        # 源草稿素材路径为空来源: (a) 生成器只写 remote_url(Linux 后端路径), path 留空;
+        # (b) 素材文件在草稿包 assets/ 下, 但子目录不固定 —— 图片在 assets/image/,
+        # 视频在 assets/video/ (旧代码对 materials.videos 一律猜 assets/video/, 图片全漏);
+        # (c) 后端打包只带本次新上传的素材, 引用的历史上传素材(如主视频)不在包里 ——
+        # 但可能在 render_uploads 其他历史草稿包里(素材名是内容 hash, 同名即同内容).
+        # 三级查找回填成新草稿内的绝对路径(正斜杠, 与剪映格式一致); 拷贝进新草稿保证自包含.
         mats = c.get('materials', {}) if isinstance(c, dict) else {}
+        missing = []
         for mkey in ('videos', 'audios'):
-            sub = 'video' if mkey == 'videos' else 'audio'
             for mat in mats.get(mkey, []) or []:
                 mname = mat.get('material_name')
                 if not mname:
@@ -92,23 +132,25 @@ def inject_draft(src_draft_dir, new_name=None):
                 cur = mat.get('path') or mat.get('media_path') or ''
                 if cur and os.path.isfile(cur.replace('/', os.sep)):
                     continue
-                # (a) 素材已在草稿 assets 子目录
-                cand = os.path.join(new_fold, 'assets', sub, mname)
-                if not os.path.isfile(cand):
-                    # (b) 按原始上传文件名(remote_url)去上传目录找, 找到就拷进草稿 assets
-                    # (拷贝而非直接引用: 草稿自包含, 上传目录后续清理也不影响渲染)
-                    remote = (mat.get('remote_url') or '').strip()
-                    rbase = os.path.basename(remote.replace('\\', '/')) if remote else ''
-                    if rbase:
-                        src_cand = os.path.join(config.UPLOAD_DIR, rbase)
-                        if os.path.isfile(src_cand):
-                            os.makedirs(os.path.dirname(cand), exist_ok=True)
-                            shutil.copyfile(src_cand, cand)
-                if os.path.isfile(cand):
-                    fwd = cand.replace('\\', '/')
+                cand = _find_material_file(dst, mname, (mat.get('remote_url') or '').strip())
+                if cand:
+                    # 归位到新草稿 assets/<类型目录>/ (已在目标位置则不重复拷贝)
+                    type_dir = 'audio' if mkey == 'audios' else (
+                        'image' if mat.get('type') == 'photo' else 'video')
+                    dst_f = os.path.join(dst, 'assets', type_dir, mname)
+                    if os.path.abspath(cand) != os.path.abspath(dst_f):
+                        os.makedirs(os.path.dirname(dst_f), exist_ok=True)
+                        shutil.copyfile(cand, dst_f)
+                    fwd = dst_f.replace('\\', '/')
                     mat['path'] = fwd
                     if not mat.get('media_path'):
                         mat['media_path'] = fwd
+                else:
+                    missing.append(mname)
+        if missing:
+            # 缺素材必然导出被拒, 与其进 4 轮点击循环误报"点击失败", 不如立刻报清原因.
+            log('ABORT 素材缺失 %d 项(导出必被拒): %s' % (len(missing), ', '.join(missing)))
+            return None
         # 关键修复 2: 零时长视频段. 生成器拿不到素材时长时(ffprobe 不了裸文件名 remote_url),
         # 会留下 source/target duration=0 的 segment —— 剪映渲染该段就是纯黑屏+无声
         # (叠加段因显式传了 start/end 区间正常, 只有主视频这种"自动取全长"的段中招).
@@ -134,6 +176,8 @@ def inject_draft(src_draft_dir, new_name=None):
                 m = mat_by_id.get(seg.get('material_id'))
                 if not m or not (m.get('path') and os.path.isfile(m['path'])):
                     continue
+                if m.get('type') == 'photo':
+                    continue  # 图片段区间由生成器显式给定; ffprobe 图片时长无意义
                 dur_us = _probe_dur_us(m['path'])
                 if dur_us <= 0:
                     continue
@@ -1228,7 +1272,10 @@ class Driver:
             draft_name = 'rd%d' % int(time.time() * 1000)  # 纯英文数字, 唯一
         if search_term is None:
             search_term = draft_name
-        inject_draft(src_draft_dir, draft_name)
+        if not inject_draft(src_draft_dir, draft_name):
+            log('中止: 草稿素材缺失, 导出必被剪映拒绝 (原因见上方 ABORT 行)')
+            _cleanup_injected_draft(draft_name)
+            return False
         emit_progress('inject', 10)
         time.sleep(2)  # 等剪映实时识别
 
