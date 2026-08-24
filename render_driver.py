@@ -308,6 +308,22 @@ def _cleanup_injected_draft(draft_name):
         log('清理注入草稿异常: %s' % e)
 
 
+def _check_disk_space(min_free_mb=2048):
+    """渲染前置磁盘检查: 草稿根(注入要拷大素材)和导出目录(输出 mp4)所在盘剩余空间.
+    磁盘满时剪映不报错而是静默拒绝打开草稿(表现为点卡片/点导出"没反应"),
+    实测 C 盘剩 0.9GB 时 8 连败全是这个形态 — 与其让剪映装哑巴, 不如这里直接报清原因."""
+    import ctypes
+    free = ctypes.c_ulonglong(0); total = ctypes.c_ulonglong(0)
+    for p in (DRAFT_ROOT, config.VIDEOS_DIR):
+        drive = os.path.splitdrive(os.path.abspath(p))[0] + os.sep
+        if ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                drive, ctypes.byref(free), ctypes.byref(total), None):
+            if free.value < min_free_mb * 1024 * 1024:
+                return False, '%s 剩余 %dMB (需 %dMB)' % (
+                    drive.rstrip(os.sep), free.value // 1048576, min_free_mb)
+    return True, ''
+
+
 def _sweep_zombie_drafts():
     """启动剪映前清扫残留的 rd* 注入草稿. 上次渲染的清理发生在剪映仍开着时, rmtree 常被
     编辑器占用的句柄部分挡掉(ignore_errors 静默失败), 留下空壳文件夹 — 实测 2 天积了 14 个,
@@ -1317,6 +1333,11 @@ class Driver:
         for k in need:
             if k not in caps:
                 log('calib 缺 %s' % k); return False
+
+        okd, why = _check_disk_space()
+        if not okd:
+            log('ABORT 磁盘空间不足: %s — 剪映会静默拒绝打开草稿(点击全部"没反应"), 请清理或换大盘' % why)
+            return False
 
         resize_jianying()  # 保证窗口尺寸 = 校准时尺寸, 坐标才准
 
