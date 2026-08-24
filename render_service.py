@@ -264,7 +264,10 @@ def _run_render_streaming(task_id, argv):
 
 
 def render_pool_worker():
-    """worker 线程: 取队列任务 → 获取桌面 → 渲染 (每次自己 start+kill 剪映)."""
+    """worker 线程: 取队列任务 → 获取桌面 → 渲染 (每次自己 start+kill 剪映).
+    GUI 状态故障 (卡片找不到/弹窗不出现/编辑器未开) 自动重启剪映+清扫后重试 1 次 —
+    这类故障几乎都不是草稿问题, 是剪映 GUI 状态坏了, 新鲜进程+干净索引通常能自愈
+    (2026-08-24 反复出现的 card not found 实锤需要这一层)."""
     while True:
         task_id, draft_dir, draft_name = RENDER_QUEUE.get()
         desk = acquire_desktop()
@@ -285,6 +288,24 @@ def render_pool_worker():
             code, stdout_tail, stderr_tail = _run_render_streaming(
                 task_id, ['render-draft', draft_dir, '--desktop', '--desktop-name', desk])
             dt = time.time() - t0
+
+            # ---- GUI 状态故障自动重试 1 次 (重启剪映 + 幽灵清扫) ----
+            combined = (stderr_tail + stdout_tail)
+            gui_fail = code != 0 and any(k in combined for k in (
+                'card not found', '未找到', '草稿卡片', '导出窗口未出现', '编辑器未打开',
+                '未触发渲染', '编辑器无新窗口'))
+            if gui_fail and not tasks.get(task_id, {}).get('_auto_retried'):
+                print('[render] 任务 %s GUI 状态故障, 重启剪映+清扫后自动重试 1 次' % task_id, flush=True)
+                with TASK_LOCK:
+                    tasks[task_id]['_auto_retried'] = True
+                    tasks[task_id]['error'] = None
+                _persist(task_id)
+                _restart_jianying_and_sweep()
+                t0b = time.time()
+                code, stdout_tail, stderr_tail = _run_render_streaming(
+                    task_id, ['render-draft', draft_dir, '--desktop', '--desktop-name', desk])
+                dt += time.time() - t0b
+
             with TASK_LOCK:
                 tasks[task_id]['duration'] = dt
                 if code == 0:
@@ -315,6 +336,23 @@ def render_pool_worker():
         finally:
             release_desktop(desk)
             RENDER_QUEUE.task_done()
+
+
+def _restart_jianying_and_sweep():
+    """杀掉所有剪映进程 + 清扫僵尸草稿/幽灵索引 (自动重试前调用).
+    渲染节点上剪映 GUI 状态坏了 (卡片不显示/弹窗卡死) 时, 这是最低成本的自愈."""
+    try:
+        subprocess.run(['powershell', '-NoProfile', '-Command',
+                        "Get-Process JianyingPro -ErrorAction SilentlyContinue | Stop-Process -Force"],
+                       capture_output=True, timeout=30)
+        time.sleep(2)
+    except Exception as e:
+        print('[render] 杀剪映进程失败(继续): %s' % e, flush=True)
+    try:
+        import render_driver
+        render_driver._sweep_zombie_drafts()
+    except Exception as e:
+        print('[render] 幽灵清扫失败(继续): %s' % e, flush=True)
 
 
 def enqueue_render(task_id, draft_dir, draft_name):
