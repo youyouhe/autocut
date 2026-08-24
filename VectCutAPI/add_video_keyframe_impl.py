@@ -45,14 +45,19 @@ def add_video_keyframe_impl(
     Note: property_types, times, values must be provided together and have equal lengths. If these parameters are provided, single keyframe parameters will be ignored
     :return: Updated draft information
     """
-    # Get or create draft
-    draft_id, script = get_or_create_draft(
-        draft_id=draft_id
-    )
+    # 取存活草稿: 缓存 miss 从磁盘载入 (edit_impl._get_script 自愈),
+    # 不再用 get_or_create_draft — 它在缓存 miss 时静默新建空草稿,
+    # 后续轨道/素材操作全打在空壳上, 报"轨道不存在"误导
+    from edit_impl import _get_script
+    script = _get_script(draft_id)
     
     try:
-        # Get specified track
-        track = script.get_track(draft.Video_segment, track_name=track_name)
+        # Get specified track (普通轨道找不到时回退导入轨道 — add_image 建的 image_main 等
+        # 是 ImportedMediaTrack, 老代码只查 script.tracks 会误报"不存在名为 x 的轨道")
+        try:
+            track = script.get_track(draft.Video_segment, track_name=track_name)
+        except Exception:
+            track = script.get_imported_track(draft.Track_type.video, name=track_name)
         
         # Get segments in the track
         segments = track.segments

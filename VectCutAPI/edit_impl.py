@@ -7,6 +7,7 @@
 时间单位: 库内部微秒, 本模块 API 秒。定位方式统一: segment_id 或 track_name+index。
 """
 import copy
+import os
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,9 +19,24 @@ SEC = 1_000_000  # 一秒 = 1e6 微秒
 
 
 def _get_script(draft_id: str):
-    if draft_id not in DRAFT_CACHE:
-        raise KeyError(f"草稿 '{draft_id}' 不存在于缓存中 (可能未创建或已过期)")
-    return DRAFT_CACHE[draft_id]
+    """取存活的 Script_file; 缓存 miss 时从磁盘 load_template 载入 (冷草稿自愈).
+    与 render_server._warmup_draft 同逻辑 — 编辑类路由不能依赖调用方先 warmup,
+    否则服务重启后所有编辑操作报"不存在于缓存"; 且上游 get_or_create_draft 类函数
+    在缓存 miss 时会静默新建空草稿, 让后续操作全部打在空壳上."""
+    if draft_id in DRAFT_CACHE:
+        return DRAFT_CACHE[draft_id]
+    import os as _os
+    import pyJianYingDraft as _draft
+    from draft_cache import update_cache
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    for name in ('draft_content.json', 'draft_info.json'):
+        cp = _os.path.join(here, draft_id, name)
+        if _os.path.isfile(cp):
+            script = _draft.Script_file.load_template(cp)
+            update_cache(draft_id, script)
+            logger.info(f"冷草稿已从磁盘载入缓存: {draft_id} ({name})")
+            return script
+    raise KeyError(f"草稿 '{draft_id}' 不存在于缓存且磁盘上未找到 (可能未创建或已过期)")
 
 
 def _all_tracks(script) -> List[Tuple[str, Any]]:
@@ -158,13 +174,41 @@ def replace_material_impl(draft_id: str, old_material_name: str, new_url: str,
             audio_hit = True
     try:
         if video_hit:
-            material = draft.Video_material(new_url)
+            # 第一参数是 material_type('video'/'photo'), 图片素材必须传 'photo'
+            ext = os.path.splitext(new_url)[1].lower()
+            mtype = 'photo' if ext in ('.jpg', '.jpeg', '.png', '.webp', '.bmp') else 'video'
+            material = draft.Video_material(mtype, path=new_url)
         elif audio_hit:
             material = draft.Audio_material(new_url)
         else:
             return {'ok': False, 'error': f"素材 '{old_material_name}' 未找到 (既不是视频也不是音频素材)"}
-        script.replace_material_by_name(old_material_name, material, replace_crop=replace_crop)
-        return {'ok': True, 'draft_id': draft_id, 'replaced': old_material_name, 'new_url': new_url}
+        # 手动替换全部匹配条目 (库层 replace_material_by_name 遇重名素材抛
+        # AmbiguousMaterial; 同内容素材重复出现是常态, 全部换新才对)
+        replaced = 0
+        name_key = 'material_name' if video_hit else 'name'
+        target_lists = []
+        if video_hit:
+            target_lists.append(getattr(script.materials, 'videos', None) or [])
+            target_lists.append(imported.get('videos') or [])
+        else:
+            target_lists.append(getattr(script.materials, 'audios', None) or [])
+            target_lists.append(imported.get('audios') or [])
+        for lst in target_lists:
+            for mat in lst:
+                if not isinstance(mat, dict) or mat.get(name_key) != old_material_name:
+                    continue
+                mat[name_key] = material.material_name
+                mat['path'] = material.path
+                mat['duration'] = material.duration
+                if video_hit:
+                    mat['width'] = material.width
+                    mat['height'] = material.height
+                    mat['material_type'] = material.material_type
+                replaced += 1
+        if not replaced:
+            return {'ok': False, 'error': f"素材 '{old_material_name}' 在素材表中未找到条目"}
+        return {'ok': True, 'draft_id': draft_id, 'replaced': old_material_name,
+                'new_url': new_url, 'replaced_count': replaced}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
 

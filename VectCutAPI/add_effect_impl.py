@@ -29,12 +29,11 @@ def add_effect_impl(
     :param height: Video height, default 1920
     :return: Updated draft information
     """
-    # Get or create draft
-    draft_id, script = get_or_create_draft(
-        draft_id=draft_id,
-        width=width,
-        height=height
-    )
+    # 取存活草稿: 缓存 miss 从磁盘载入 (edit_impl._get_script 自愈),
+    # 不再用 get_or_create_draft — 它在缓存 miss 时静默新建空草稿,
+    # 后续素材操作全打在空壳上
+    from edit_impl import _get_script
+    script = _get_script(draft_id)
 
     # Calculate time range
     duration = end - start
@@ -81,8 +80,8 @@ def add_effect_impl(
     else:
         script.add_track(draft.Track_type.effect)
 
-    # Add effect
-    script.add_effect(effect_enum, t_range, params=params[::-1], track_name=track_name)
+    # Add effect (params 可省略: None 时用特效默认值, 直接切片会 NoneType 报错)
+    script.add_effect(effect_enum, t_range, params=params[::-1] if params is not None else None, track_name=track_name)
 
     return {
         "draft_id": draft_id,
