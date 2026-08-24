@@ -169,7 +169,17 @@ TOOL_SCHEMAS = [
                     "target_start": {"type": "number", "description": "这段素材在成片时间轴上应该出现的秒数(不是素材源文件的秒数)。不填=自动接在同名轨道已有内容末尾"},
                     "track_name": {"type": "string", "description": "轨道名，默认 'video_main'(主视频轨道)。叠加补充素材时用不同的名字，如 'broll_1'"},
                     "relative_index": {"type": "integer", "description": "轨道层级，数值越大越靠上层显示。叠加在主视频上方要设成比主视频轨道更高的值(如 1)，否则会被主视频盖住而不是盖住主视频"},
-                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）。不传=用当前激活草稿。"}
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）。不传=用当前激活草稿。"},
+                    "speed": {"type": "number", "description": "变速倍数, 1=原速, 2=两倍速(时长减半)"},
+                    "volume": {"type": "number", "description": "音量 0~1, 0=静音"},
+                    "transform_x": {"type": "number", "description": "水平位置, 归一化 -1(最左)~1(最右), 默认0居中(画中画用)"},
+                    "transform_y": {"type": "number", "description": "垂直位置, 归一化 -1(最下)~1(最上), 默认0居中"},
+                    "scale_x": {"type": "number", "description": "水平缩放倍数, 默认1"},
+                    "scale_y": {"type": "number", "description": "垂直缩放倍数, 默认1"},
+                    "mask_type": {"type": "string", "description": "蒙版形状: linear/mirror/circle/rectangle/heart/star 等, 用 list_edit_enums(kind='mask') 查全集"},
+                    "transition": {"type": "string", "description": "与下一段的转场名, 用 list_edit_enums(kind='transition') 查全集"},
+                    "transition_duration": {"type": "number", "description": "转场时长秒, 默认用该转场默认值"},
+                    "background_blur": {"type": "integer", "description": "背景模糊 1(轻)~4(最强), 竖屏视频在横画布时的填充背景"}
                 },
                 "required": ["url"]
             }
@@ -189,6 +199,16 @@ TOOL_SCHEMAS = [
                     "time_offset": {"type": "number", "description": "整体时间偏移秒数, 默认0"},
                     "font_size": {"type": "number", "description": "字号, 默认5"},
                     "font_color": {"type": "string", "description": "字体颜色十六进制, 默认 '#FFFFFF'"},
+                    "bold": {"type": "boolean", "description": "加粗, 默认 false"},
+                    "italic": {"type": "boolean", "description": "斜体"},
+                    "underline": {"type": "boolean", "description": "下划线"},
+                    "transform_y": {"type": "number", "description": "垂直位置, -1(最下)~1(最上), 默认约-0.8(画面下方); 字幕想往上避让图片时调到 -0.3~0"},
+                    "transform_x": {"type": "number", "description": "水平位置, 默认0居中"},
+                    "scale_x": {"type": "number", "description": "水平缩放, 默认1"},
+                    "scale_y": {"type": "number", "description": "垂直缩放, 默认1"},
+                    "rotation": {"type": "number", "description": "旋转角度(度)"},
+                    "border_width": {"type": "number", "description": "描边宽度"},
+                    "border_color": {"type": "string", "description": "描边颜色十六进制"},
                     "draft_id": {"type": "string", "description": "目标草稿 id（可选）。不传=用当前激活草稿。"}
                 },
                 "required": ["srt"]
@@ -215,6 +235,13 @@ TOOL_SCHEMAS = [
                     "background_alpha": {"type": "number", "description": "背景不透明度 0.0~1.0，默认0（无背景，纯色块不是毛玻璃/模糊效果——本工具不支持真实的背景模糊/毛玻璃特效）"},
                     "intro_animation": {"type": "string", "description": "入场动画名，如 'Random_Typewriter'(打字机)/'Blur_to_the_Left'(左移模糊)/'Bounce_from_TR'(右上弹入) 等，需精确匹配预置动画名，不确定就别填"},
                     "outro_animation": {"type": "string", "description": "出场动画名，同 intro_animation 命名规则，如 'Blur_to_the_Left'/'Horizontal_Close' 等，不确定就别填"},
+                    "font": {"type": "string", "description": "字体资源名, 用 list_edit_enums(kind='font') 查全集"},
+                    "font_alpha": {"type": "number", "description": "文字不透明度 0~1"},
+                    "vertical": {"type": "boolean", "description": "竖排文字"},
+                    "border_color": {"type": "string", "description": "描边颜色十六进制"},
+                    "border_width": {"type": "number", "description": "描边宽度"},
+                    "border_alpha": {"type": "number", "description": "描边不透明度 0~1"},
+                    "shadow_enabled": {"type": "boolean", "description": "开启阴影"},
                     "draft_id": {"type": "string", "description": "目标草稿 id（可选）。不传=用当前激活草稿。"}
                 },
                 "required": ["text", "start", "end"]
@@ -246,7 +273,10 @@ TOOL_SCHEMAS = [
                     "url": {"type": "string", "description": "音频URL或本地路径"},
                     "start": {"type": "number", "description": "插入到草稿时间轴的开始秒", "default": 0},
                     "end": {"type": "number", "description": "结束秒（不填=到音频末尾）"},
-                    "volume": {"type": "number", "description": "音量 0-1", "default": 0.5}
+                    "volume": {"type": "number", "description": "音量 0-1", "default": 0.5},
+                    "speed": {"type": "number", "description": "变速倍数, 1=原速"},
+                    "target_start": {"type": "number", "description": "成片时间轴上的位置秒(与 start 二选一, 背景音乐通常 0)"},
+                    "track_name": {"type": "string", "description": "音频轨道名(多段音频分层时用)"}
                 },
                 "required": ["url"]
             }
@@ -264,7 +294,16 @@ TOOL_SCHEMAS = [
                     "start": {"type": "number", "description": "插入到草稿时间轴的开始秒。不填=自动接在图片轨道已有内容末尾"},
                     "end": {"type": "number", "description": "结束秒。不填=从 start 起默认展示 3 秒"},
                     "track_name": {"type": "string", "description": "轨道名，默认 'image_main'。跟主视频叠加时可以保持默认(图片轨默认就在视频轨上方)"},
-                    "relative_index": {"type": "integer", "description": "轨道层级，数值越大越靠上层显示"}
+                    "relative_index": {"type": "integer", "description": "轨道层级，数值越大越靠上层显示"},
+                    "transform_x": {"type": "number", "description": "水平位置, 归一化 -1(最左)~1(最右), 默认0居中"},
+                    "transform_y": {"type": "number", "description": "垂直位置, 归一化 -1(最下)~1(最上), 默认0居中; 放画面上半部分用 0.4~0.6, 放下方用 -0.4~-0.6"},
+                    "scale_x": {"type": "number", "description": "水平缩放倍数, 默认1; 图片宽度铺满画布约 1.8~2.2 (依图片原始尺寸)"},
+                    "scale_y": {"type": "number", "description": "垂直缩放倍数, 默认1; 保持等比时与 scale_x 相同"},
+                    "intro_animation": {"type": "string", "description": "入场动画名, 用 list_edit_enums(kind='image_intro') 查"},
+                    "outro_animation": {"type": "string", "description": "出场动画名"},
+                    "transition": {"type": "string", "description": "与下一段的转场名, 用 list_edit_enums(kind='transition') 查"},
+                    "background_blur": {"type": "integer", "description": "背景模糊 1~4"},
+                    "mask_type": {"type": "string", "description": "蒙版形状: linear/mirror/circle/rectangle/heart/star 等"}
                 },
                 "required": ["url"]
             }
@@ -439,6 +478,34 @@ def execute_tool(name, args, ctx):
     import memory_store as ms
     draft_id = ctx.draft_id  # 本地镜像; 三处赋值点写回 ctx
     result = {}
+
+    def _passthrough(d, keys, args=args):
+        """把 args 里非 None 的白名单键透传进 payload d (二次包装: 参数与 schema 同步)."""
+        for k in keys:
+            if args.get(k) is not None:
+                d[k] = args[k]
+
+    _ADD_VIDEO_EXTRA = ('relative_index', 'start', 'end', 'speed', 'volume',
+                        'transform_x', 'transform_y', 'scale_x', 'scale_y',
+                        'mask_type', 'mask_center_x', 'mask_center_y', 'mask_size',
+                        'mask_rotation', 'mask_feather', 'mask_invert',
+                        'mask_rect_width', 'mask_round_corner',
+                        'transition', 'transition_duration', 'background_blur')
+    _ADD_SUBTITLE_EXTRA = ('time_offset', 'font_size', 'font_color', 'bold', 'italic', 'underline',
+                           'transform_x', 'transform_y', 'scale_x', 'scale_y', 'rotation',
+                           'border_width', 'border_color', 'border_alpha',
+                           'background_color', 'background_alpha', 'background_style')
+    _ADD_TEXT_EXTRA = ('font', 'font_alpha', 'vertical', 'border_color', 'border_width', 'border_alpha',
+                       'shadow_enabled', 'shadow_alpha', 'shadow_angle', 'shadow_color',
+                       'shadow_distance', 'shadow_smoothing', 'fixed_width', 'fixed_height',
+                       'intro_animation', 'intro_duration', 'outro_animation', 'outro_duration')
+    _ADD_AUDIO_EXTRA = ('start', 'end', 'volume', 'speed', 'target_start', 'track_name')
+    _ADD_IMAGE_EXTRA = ('relative_index', 'transform_x', 'transform_y', 'scale_x', 'scale_y',
+                        'intro_animation', 'intro_duration', 'outro_animation', 'outro_duration',
+                        'combo_animation', 'transition', 'transition_duration',
+                        'background_blur', 'mask_type', 'mask_center_x', 'mask_center_y', 'mask_size',
+                        'mask_rotation', 'mask_feather', 'mask_invert',
+                        'mask_rect_width', 'mask_round_corner')
 
     if name == 'list_resources':
         import main_video_store
@@ -635,9 +702,7 @@ def execute_tool(name, args, ctx):
             target_start = rs._track_end_seconds(did, track_name, user_id=ctx.uid)
         d = {'draft_id': did, 'video_url': rs._resolve_asset_url(args.get('url',''), uid=ctx.uid),
              'track_name': track_name, 'target_start': target_start}
-        if args.get('relative_index') is not None: d['relative_index'] = args['relative_index']
-        if args.get('start') is not None: d['start'] = args['start']
-        if args.get('end') is not None: d['end'] = args['end']
+        _passthrough(d, _ADD_VIDEO_EXTRA)
         r = rs._post_internal('add_video', d, user_id=ctx.uid)
         result = {'ok': r.get('success', False), 'draft_id': did, 'track_name': track_name, 'target_start': target_start}
 
@@ -649,9 +714,7 @@ def execute_tool(name, args, ctx):
             result = {'error': 'srt 内容为空'}
         else:
             d = {'draft_id': did, 'srt': srt}
-            if args.get('time_offset') is not None: d['time_offset'] = args['time_offset']
-            if args.get('font_size') is not None: d['font_size'] = args['font_size']
-            if args.get('font_color') is not None: d['font_color'] = args['font_color']
+            _passthrough(d, _ADD_SUBTITLE_EXTRA)
             r = rs._post_internal('add_subtitle', d, user_id=ctx.uid)
             result = {'ok': r.get('success', False), 'draft_id': did, 'error': r.get('error')}
 
@@ -680,6 +743,7 @@ def execute_tool(name, args, ctx):
             if valid and args['outro_animation'] not in valid:
                 return json.dumps({'error': f"outro_animation 名字不存在: {args['outro_animation']!r}，先调用 list_text_animations(kind='outro') 看合法名字"}, ensure_ascii=False)
             d['outro_animation'] = args['outro_animation']
+        _passthrough(d, _ADD_TEXT_EXTRA)
         r = rs._post_internal('add_text', d, user_id=ctx.uid)
         result = {'ok': r.get('success', False), 'draft_id': did, 'track_name': track_name}
 
@@ -692,8 +756,7 @@ def execute_tool(name, args, ctx):
         if not did: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
         d = {'draft_id': did, 'audio_url': rs._resolve_asset_url(args.get('url',''), uid=ctx.uid),
              'volume': args.get('volume', 0.5)}
-        if args.get('start') is not None: d['start'] = args['start']
-        if args.get('end') is not None: d['end'] = args['end']
+        _passthrough(d, _ADD_AUDIO_EXTRA)
         r = rs._post_internal('add_audio', d, user_id=ctx.uid)
         result = {'ok': r.get('success', False), 'draft_id': did}
 
@@ -709,7 +772,7 @@ def execute_tool(name, args, ctx):
             end = start + 3   # 没给时长默认展示 3 秒
         d = {'draft_id': did, 'image_url': rs._resolve_asset_url(args.get('url',''), uid=ctx.uid),
              'track_name': track_name, 'start': start, 'end': end}
-        if args.get('relative_index') is not None: d['relative_index'] = args['relative_index']
+        _passthrough(d, _ADD_IMAGE_EXTRA)
         r = rs._post_internal('add_image', d, user_id=ctx.uid)
         result = {'ok': r.get('success', False), 'draft_id': did, 'track_name': track_name, 'start': start, 'end': end}
 
