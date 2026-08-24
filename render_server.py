@@ -1292,8 +1292,13 @@ def api_list_drafts():
     # 附加最新渲染成片: 按 draft_name 匹配 done 任务, 取最近一次的 mp4 (预览/下载入口).
     try:
         _done = {}
-        _tasks = task_store.load_all(user_id=uid)
-        _tasks = _tasks.values() if isinstance(_tasks, dict) else _tasks
+        # 合并内存实时任务 + 落盘任务 (事件推送路径改状态后, mp4_path 可能只在内存里)
+        _tasks = dict(task_store.load_all(user_id=uid) or {})
+        with TASK_LOCK:
+            for tid, t in tasks.items():
+                if uid is None or t.get('user_id') in (uid, None):
+                    _tasks[tid] = t   # 内存为准 (更新)
+        _tasks = _tasks.values()
         for t in _tasks:
             dn = t.get('draft_name')
             if not dn or t.get('status') != 'done' or not t.get('mp4_path'):
