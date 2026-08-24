@@ -9,6 +9,7 @@
 import copy
 import os
 import logging
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from draft_cache import DRAFT_CACHE
@@ -16,6 +17,17 @@ from draft_cache import DRAFT_CACHE
 logger = logging.getLogger(__name__)
 
 SEC = 1_000_000  # 一秒 = 1e6 微秒
+
+# 草稿级编辑锁: 两个会话/请求同时编辑同一草稿时串行化
+# (并发 add/update/save 交错会导致时间线错乱或 json 半写损坏)
+_DRAFT_LOCKS: Dict[str, threading.RLock] = {}
+_DRAFT_LOCKS_GUARD = threading.Lock()
+
+
+def draft_lock(draft_id: str) -> threading.RLock:
+    """取某草稿的编辑锁 (RLock). 用法: `with draft_lock(did): ...`"""
+    with _DRAFT_LOCKS_GUARD:
+        return _DRAFT_LOCKS.setdefault(draft_id, threading.RLock())
 
 
 def _get_script(draft_id: str):

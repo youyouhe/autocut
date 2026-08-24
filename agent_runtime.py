@@ -119,7 +119,11 @@ def build_agent(ctx):
         raise RuntimeError('未配置任何 LLM API Key (DeepSeek/Qwen), 请在设置页配置')
     model = OpenAIChatCompletionsModel(
         model=model_name,
-        openai_client=AsyncOpenAI(base_url=base_url, api_key=api_key),
+        # timeout: DeepSeek 思考型模型复杂轮次要 1-3 分钟, 默认 600s 在渲染监控的
+        # 长对话里会误杀 ("Agent 运行失败: Request timed out" 误报). 放宽到 900s;
+        # max_retries: 超时/连接错误由 SDK 层自动重试 3 次, 不再整轮失败.
+        openai_client=AsyncOpenAI(base_url=base_url, api_key=api_key,
+                                  timeout=900, max_retries=3),
     )
 
     # bsk (BrowserSkill) 驱动本机浏览器 —— 无桌面环境 (无 X11/Chrome) 的服务器上不可用.

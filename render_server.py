@@ -2079,8 +2079,19 @@ def api_chat():
                 from agents.exceptions import InputGuardrailTripwireTriggered
                 if isinstance(e, InputGuardrailTripwireTriggered):
                     q.put(('error', {'text': '（该请求被输入守卫拦截：消息超长或包含疑似提示注入/越权内容，请调整后再发）'}))
-                else:
-                    q.put(('error', {'text': f'Agent 运行失败: {e}'}))
+                    return
+                # LLM 超时/连接错误: 不判死刑 — 提示后自动重试 (递增退避),
+                # SDK 层 max_retries=3 已挡大部分, 到这里的是连续失败, 再给它两轮机会
+                import asyncio as _asyncio
+                err_str = str(e).lower()
+                is_transient = any(k in err_str for k in ('timed out', 'timeout', 'connection', 'rate limit', '529', '503', '502'))
+                if is_transient and run_state.get('_llm_retries', 0) < 2:
+                    run_state['_llm_retries'] = run_state.get('_llm_retries', 0) + 1
+                    wait = 5 * run_state['_llm_retries']
+                    q.put(('text', {'text': f'（LLM 服务暂时超时，{wait}s 后自动重试 ({run_state["_llm_retries"]}/2)…）'}))
+                    await _asyncio.sleep(wait)
+                    continue
+                q.put(('error', {'text': f'Agent 运行失败: {e}'}))
                 return
             if produced:
                 return

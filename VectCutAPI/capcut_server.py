@@ -859,7 +859,10 @@ def _edit_route(impl, data, **fixed):
     try:
         kwargs = {k: v for k, v in data.items() if k not in ('draft_id', '_user_id')}
         kwargs.update(fixed)
-        out = impl(draft_id=draft_id, **kwargs)
+        # 草稿级锁: 同一草稿的编辑操作串行 (防两会话并发编辑交错损坏时间线)
+        from edit_impl import draft_lock
+        with draft_lock(draft_id):
+            out = impl(draft_id=draft_id, **kwargs)
         result["success"] = bool(out.get('ok', True))
         result["output"] = out
         if not out.get('ok', True):

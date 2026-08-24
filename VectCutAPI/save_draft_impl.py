@@ -119,6 +119,13 @@ def save_draft_background(draft_id, draft_folder, task_id):
     """Background save draft to OSS"""
     try:
         # Get draft information from global cache
+        # 与编辑操作共用草稿锁: save 重建目录期间禁止并发编辑 (edit_impl.draft_lock)
+        try:
+            from edit_impl import draft_lock as _draft_lock
+            _dl = _draft_lock(draft_id)
+            _dl.acquire()
+        except Exception:
+            _dl = None
         if draft_id not in DRAFT_CACHE:
             task_status = {
                 "status": "failed",
@@ -130,6 +137,9 @@ def save_draft_background(draft_id, draft_folder, task_id):
             }
             update_tasks_cache(task_id, task_status)  # Use new cache management function
             logger.error(f"Draft {draft_id} does not exist in cache, task {task_id} failed.")
+            if _dl is not None:
+                try: _dl.release()
+                except Exception: pass
             return
             
         script = DRAFT_CACHE[draft_id]
@@ -153,10 +163,22 @@ def save_draft_background(draft_id, draft_folder, task_id):
         output_base_dir = draft_folder or current_dir
         draft_dir = os.path.join(output_base_dir, draft_id)
 
-        # Delete possibly existing draft_id folder in the target output location.
+        # 替换旧草稿目录: 先原子 rename 挪走再尽力删除 —— 直接 rmtree 在并发写入时
+        # (另一线程正在往里拷素材/写 json) 会 OSError [Errno 39] Directory not empty,
+        # 且可能留下半删除状态. rename 是原子的, 旧目录改名后异步删除, 失败也无害.
         if os.path.exists(draft_dir):
-            logger.warning(f"Deleting existing draft folder: {draft_dir}")
-            shutil.rmtree(draft_dir)
+            import time as _time
+            old_dir = draft_dir + '.old_%d' % int(_time.time() * 1000)
+            try:
+                os.rename(draft_dir, old_dir)
+                logger.warning(f"Moved existing draft folder aside: {old_dir}")
+                import threading as _threading
+                _threading.Thread(
+                    target=lambda: shutil.rmtree(old_dir, ignore_errors=True),
+                    daemon=True).start()
+            except OSError:
+                # rename 失败 (跨设备等极端情况) 退回 rmtree 尽力删
+                shutil.rmtree(draft_dir, ignore_errors=True)
 
         # Choose different template directory based on configuration
         draft_profile = get_draft_profile()
@@ -381,6 +403,9 @@ def save_draft_background(draft_id, draft_folder, task_id):
         written_files = write_profile_content(draft_profile, draft_dir, script.dumps(draft_profile))
         logger.info(f"Draft information has been saved to {[str(path) for path in written_files]}.")
 
+        if _dl is not None:
+            try: _dl.release()
+            except Exception: pass
         draft_url = ""
         # Only upload draft information when IS_UPLOAD_DRAFT is True
         if IS_UPLOAD_DRAFT:
@@ -418,10 +443,16 @@ def save_draft_background(draft_id, draft_folder, task_id):
 
     except Exception as e:
         # Update task status - Failed
-        update_task_fields(task_id, 
+        update_task_fields(task_id,
                           status="failed",
                           message=f"Failed to save draft: {str(e)}")
         logger.error(f"Saving draft {draft_id} task {task_id} failed: {str(e)}", exc_info=True)
+        # 异常路径也必须释放草稿锁 (否则该草稿的后续编辑永久阻塞)
+        try:
+            if '_dl' in dir() and _dl is not None:
+                _dl.release()
+        except Exception:
+            pass
         return ""
 
 def query_task_status(task_id: str):

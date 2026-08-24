@@ -2602,7 +2602,7 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "e96c443932384412bbfee3972d16cd85",
+                    "id": "656bd540d6904034a62c317570427c52",
                     "material_id": "9ffb34963fa530d7a4e4d62e8cb25835",
                     "target_timerange": {
                         "start": 0,
@@ -2667,10 +2667,10 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "17ff8f43bcae42079eef72cfb10315a6",
+                    "id": "9697247554ba41f4b164df8b8e7e6a1d",
                     "material_id": "028d8a2959ee3bef859cabdb4d8c2f45",
                     "target_timerange": {
-                        "start": 960000,
+                        "start": 2240000,
                         "duration": 2000000
                     },
                     "common_keyframes": [],
@@ -2722,63 +2722,8 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "dd58781e26454eb48bbc1f05c759f59c",
+                    "id": "427e78183acd4db4b2d406e37e3a6dc6",
                     "material_id": "823ab1d8368e390a9312e279ab0d5007",
-                    "target_timerange": {
-                        "start": 8400000,
-                        "duration": 2000000
-                    },
-                    "common_keyframes": [],
-                    "keyframe_refs": [],
-                    "source_timerange": {
-                        "start": 0,
-                        "duration": 2000000
-                    },
-                    "speed": null,
-                    "volume": 1.0,
-                    "extra_material_refs": [],
-                    "clip": {
-                        "alpha": 1.0,
-                        "flip": {
-                            "horizontal": false,
-                            "vertical": false
-                        },
-                        "rotation": 0.0,
-                        "scale": {
-                            "x": 1,
-                            "y": 1
-                        },
-                        "transform": {
-                            "x": 0,
-                            "y": 0
-                        }
-                    },
-                    "uniform_scale": {
-                        "on": true,
-                        "value": 1.0
-                    },
-                    "hdr_settings": {
-                        "intensity": 1.0,
-                        "mode": 1,
-                        "nits": 1000
-                    },
-                    "render_index": 1
-                },
-                {
-                    "enable_adjust": true,
-                    "enable_color_correct_adjust": false,
-                    "enable_color_curves": true,
-                    "enable_color_match_adjust": false,
-                    "enable_color_wheels": true,
-                    "enable_lut": true,
-                    "enable_smart_color_adjust": false,
-                    "last_nonzero_volume": 1.0,
-                    "reverse": false,
-                    "track_attribute": 0,
-                    "track_render_index": 0,
-                    "visible": true,
-                    "id": "436f42608de54aafa5e0deb95e05ba94",
-                    "material_id": "8dcf2a0dfc923cbb813efbd90da071c9",
                     "target_timerange": {
                         "start": 16880000,
                         "duration": 2000000
@@ -2832,10 +2777,65 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "71006bc2b94348248aa9a56b2321f05a",
+                    "id": "55496027f53a48829cd83ab76fca2a06",
+                    "material_id": "8dcf2a0dfc923cbb813efbd90da071c9",
+                    "target_timerange": {
+                        "start": 21680000,
+                        "duration": 2000000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": {
+                        "start": 0,
+                        "duration": 2000000
+                    },
+                    "speed": null,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1,
+                            "y": 1
+                        },
+                        "transform": {
+                            "x": 0,
+                            "y": 0
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "hdr_settings": {
+                        "intensity": 1.0,
+                        "mode": 1,
+                        "nits": 1000
+                    },
+                    "render_index": 1
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "217ed3ed73204de3a5d78bd7bfd2370e",
                     "material_id": "cc6d5bb3fd223e8abb3d99bb4e835b33",
                     "target_timerange": {
-                        "start": 24560000,
+                        "start": 28400000,
                         "duration": 2000000
                     },
                     "common_keyframes": [],
@@ -2887,10 +2887,10 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "4b4bf06c99ed49479d74c5e4062d9f33",
+                    "id": "3d26452cb24b46d6a442a349260be501",
                     "material_id": "1a14204cfded3ec1a282704b22001f14",
                     "target_timerange": {
-                        "start": 31040000,
+                        "start": 33760000,
                         "duration": 2000000
                     },
                     "common_keyframes": [],
@@ -2942,7 +2942,7 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "7be0922f175b4782a6a276f792b6f0d0",
+                    "id": "3c27a5fdbc694963bc9cdf7ee2a03e7b",
                     "material_id": "9b81014c2e6d35429583f76d8fff25bb",
                     "target_timerange": {
                         "start": 37840000,
@@ -2997,10 +2997,10 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "31e6de39678346f49f483d19814c6c11",
+                    "id": "fd6cc1e3e65e45ad99f8224e80bc6ac7",
                     "material_id": "17722ea9d9cc3a0bb55c253f0b8d5392",
                     "target_timerange": {
-                        "start": 42240000,
+                        "start": 46560000,
                         "duration": 2000000
                     },
                     "common_keyframes": [],
@@ -3052,7 +3052,7 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "6973a2e3e4414202865d6c2d88b348ef",
+                    "id": "0e7facf8d2334acf99d1c8a9e85470aa",
                     "material_id": "2d1dd71a03da31ed887de0b0f59f5fde",
                     "target_timerange": {
                         "start": 49600000,
@@ -3107,7 +3107,7 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "db7661250ed940ba9b55ead76d048ead",
+                    "id": "13c105319c3f440c9841f077b0251020",
                     "material_id": "82a3031c38a234429931f556def0870f",
                     "target_timerange": {
                         "start": 58400000,
@@ -3162,10 +3162,10 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "78b6b1288191414c973f0c744452f9de",
+                    "id": "b14073b516d84b089aab3d82eb0cb93e",
                     "material_id": "1edb2438fd4a3819ba025ce28d6545ef",
                     "target_timerange": {
-                        "start": 64890000,
+                        "start": 69290000,
                         "duration": 2000000
                     },
                     "common_keyframes": [],
@@ -3217,10 +3217,10 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "7c7e14fafa684e13a32e74f8f50f362a",
+                    "id": "fafaaf26a7844a4eaa96247b8dc0d28c",
                     "material_id": "671455354ae6325eb7b590f3f868e246",
                     "target_timerange": {
-                        "start": 73050000,
+                        "start": 73850000,
                         "duration": 2000000
                     },
                     "common_keyframes": [],
@@ -3272,10 +3272,10 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "0c0cf7173c174fd699da0497d5de48c6",
+                    "id": "142861de3ba748178877241ad93e94ac",
                     "material_id": "6e294895906d3d7eaee03f066aa1c699",
                     "target_timerange": {
-                        "start": 82730000,
+                        "start": 81050000,
                         "duration": 2000000
                     },
                     "common_keyframes": [],
