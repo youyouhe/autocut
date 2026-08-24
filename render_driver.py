@@ -32,8 +32,22 @@ MONITOR_PY  = os.path.join(SCRIPT_DIR, 'render_monitor.py')
 # 剪映草稿根目录 (剪映实时监视此目录, 放草稿文件夹进去会自动识别)
 DRAFT_ROOT  = config.DRAFT_ROOT
 
+_LOGF = None  # 本次运行的完整日志文件 (logs/run_*.log, 服务error字段只存尾部800字不够排障)
+
 def log(m):
-    print('[%s] %s' % (time.strftime('%H:%M:%S'), m), flush=True)
+    global _LOGF
+    line = '[%s] %s' % (time.strftime('%H:%M:%S'), m)
+    print(line, flush=True)
+    try:
+        if _LOGF is None:
+            _ld = os.path.join(SCRIPT_DIR, 'logs')
+            os.makedirs(_ld, exist_ok=True)
+            _LOGF = open(os.path.join(_ld, 'run_%s_%d.log' % (
+                time.strftime('%Y%m%d_%H%M%S'), os.getpid())), 'w', encoding='utf-8')
+        _LOGF.write(line + '\n')
+        _LOGF.flush()
+    except Exception:
+        pass
 
 
 def emit_progress(stage, pct, **extra):
@@ -324,6 +338,62 @@ def _check_disk_space(min_free_mb=2048):
     return True, ''
 
 
+# 剪映草稿操作日志: 每次注入草稿都会记一条 copy_draft_external, 我们渲染后直接删文件夹,
+# 日志却留着记录 → 下次启动剪映核对日志 vs 磁盘对不上, 报"草稿列表异常/部分草稿丢失"
+# 横幅, 首页卡片点击全被吞(点卡片 ok 但编辑器永不打开, 8 连败真凶).
+DRAFT_ACTION_JOURNAL = os.path.join(
+    os.path.dirname(config.JY_APP_BASE), 'User Data', 'Log', 'draft_acion_watch.json')
+
+
+# 剪映的真实草稿索引固定在 User Data\Projects\com.lveditor.draft\root_meta_info.json,
+# 不随"草稿位置"设置移动(挪到 F 盘后索引仍在 C 盘这里). 渲染后删掉的 rd 草稿会以
+# 幽灵条目留在索引里 → 下次启动报"草稿列表异常/部分草稿丢失"横幅 → 首页卡片点击
+# 全部被吞(点卡片 ok 但编辑器永不打开). DRAFT_ROOT 下的 root_meta 剪映根本不读.
+JY_ROOT_META = os.path.join(
+    os.path.dirname(config.JY_APP_BASE), 'User Data', 'Projects',
+    'com.lveditor.draft', 'root_meta_info.json')
+
+
+def _prune_root_meta():
+    """剪掉索引里指向已不存在文件夹的幽灵条目 (剪映必须关着时做)."""
+    try:
+        m = json.load(open(JY_ROOT_META, encoding='utf-8'))
+    except Exception:
+        return
+    store = m.get('all_draft_store') or []
+    keep = []
+    for d in store:
+        fp = (d.get('draft_fold_path') or '').replace('/', os.sep)
+        if fp and not os.path.isdir(fp):
+            log('剪掉幽灵索引条目: %s (文件夹不存在)' % d.get('draft_name'))
+            continue
+        keep.append(d)
+    if len(keep) != len(store):
+        m['all_draft_store'] = keep
+        m['draft_ids'] = len(keep)
+        try:
+            json.dump(m, open(JY_ROOT_META, 'w', encoding='utf-8'), ensure_ascii=False)
+        except OSError:
+            pass
+
+
+def _clean_draft_journal():
+    """滤掉草稿操作日志里的 rd* 注入记录 (必须在剪映关闭时做; 由 _sweep_zombie_drafts
+    在启动剪映前调用)."""
+    try:
+        lines = open(DRAFT_ACTION_JOURNAL, encoding='utf-8', errors='replace').read().splitlines()
+    except OSError:
+        return
+    keep = [l for l in lines if '"draft_name":"rd' not in l]
+    if len(keep) != len(lines):
+        try:
+            open(DRAFT_ACTION_JOURNAL, 'w', encoding='utf-8').write(
+                '\n'.join(keep) + ('\n' if keep else ''))
+            log('已清理草稿操作日志 rd 记录: %d -> %d 行' % (len(lines), len(keep)))
+        except OSError:
+            pass
+
+
 def _sweep_zombie_drafts():
     """启动剪映前清扫残留的 rd* 注入草稿. 上次渲染的清理发生在剪映仍开着时, rmtree 常被
     编辑器占用的句柄部分挡掉(ignore_errors 静默失败), 留下空壳文件夹 — 实测 2 天积了 14 个,
@@ -331,9 +401,11 @@ def _sweep_zombie_drafts():
     try:
         names = [d for d in os.listdir(DRAFT_ROOT) if d.startswith('rd')]
     except OSError:
-        return
+        names = []
     for name in names:
         _cleanup_injected_draft(name)
+    _clean_draft_journal()
+    _prune_root_meta()
 
 
 def find_main_pid():
@@ -1624,6 +1696,7 @@ def main():
         # render_draft 第 5 步注释). 没删干净的由下次启动前的 _sweep_zombie_drafts 兜底.
         if getattr(d, 'injected_name', None):
             _cleanup_injected_draft(d.injected_name)
+            _prune_root_meta()  # 索引幽灵条目也当场剪掉, 不等下次启动前兜底
 
 if __name__ == '__main__':
     main()
