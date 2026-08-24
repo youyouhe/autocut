@@ -100,11 +100,14 @@ VIDEOS_DIR = os.environ.get('VIDEOS_DIR', os.path.join(USERPROFILE, 'Videos'))
 UPLOAD_DIR = os.environ.get('UPLOAD_DIR', os.path.join(HERE, 'render_uploads'))
 GUI_UPLOAD_DIR = os.path.join(HERE, 'gui_uploads')
 CACHE_DIR = os.environ.get('ANALYSIS_CACHE_DIR', os.path.join(HERE, 'analysis_cache'))
+# 渲染节点素材内容寻址缓存: 按素材 hash 名各存一份 (video_<hash>.mp4 同名即同内容),
+# 草稿包缺料时跨任务/跨包找回, 不依赖历史草稿包在 render_uploads 里存活
+ASSET_CACHE_DIR = os.environ.get('ASSET_CACHE_DIR', os.path.join(HERE, 'asset_cache'))
 STATIC_DIR = os.path.join(HERE, 'static')
 TEMPLATES_DIR = os.path.join(HERE, 'templates')
 CALIB_FILE = os.environ.get('CALIB_FILE', os.path.join(HERE, 'calib.json'))
 
-for _d in (UPLOAD_DIR, GUI_UPLOAD_DIR, CACHE_DIR):
+for _d in (UPLOAD_DIR, GUI_UPLOAD_DIR, CACHE_DIR, ASSET_CACHE_DIR):
     os.makedirs(_d, exist_ok=True)
 
 # ============================================================ 渲染

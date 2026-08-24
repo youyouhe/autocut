@@ -57,6 +57,11 @@ def _find_material_file(new_draft_dir, mname, remote_url=''):
             break
     if hit:
         return hit
+    # (b) 素材缓存: 内容寻址(素材名即 hash), 渲染过的素材都留一份 — 不依赖历史
+    #     草稿包在 render_uploads 里存活, render_uploads 清理后依然能找回
+    cache_p = os.path.join(config.ASSET_CACHE_DIR, mname)
+    if os.path.isfile(cache_p):
+        return cache_p
     rbase = os.path.basename((remote_url or '').replace('\\', '/')).strip()
     if rbase:
         p = os.path.join(config.UPLOAD_DIR, rbase)
@@ -141,6 +146,18 @@ def inject_draft(src_draft_dir, new_name=None):
                     if os.path.abspath(cand) != os.path.abspath(dst_f):
                         os.makedirs(os.path.dirname(dst_f), exist_ok=True)
                         shutil.copyfile(cand, dst_f)
+                    # 顺手填素材缓存 (下次任何包缺这个素材直接命中, 不翻历史包):
+                    # 优先硬链接 (大视频不占双份磁盘, 同卷才可行), 失败退化为拷贝
+                    try:
+                        cache_p = os.path.join(config.ASSET_CACHE_DIR, mname)
+                        if not os.path.isfile(cache_p):
+                            os.makedirs(config.ASSET_CACHE_DIR, exist_ok=True)
+                            try:
+                                os.link(cand, cache_p)
+                            except OSError:
+                                shutil.copyfile(cand, cache_p)
+                    except Exception:
+                        pass
                     fwd = dst_f.replace('\\', '/')
                     mat['path'] = fwd
                     if not mat.get('media_path'):
@@ -269,8 +286,14 @@ def _cleanup_injected_draft(draft_name):
     try:
         injected = os.path.join(DRAFT_ROOT, draft_name)
         if os.path.exists(injected):
-            shutil.rmtree(injected, ignore_errors=True)
-            log('已清理注入草稿: %s' % draft_name)
+            # rmtree 带重试: 剪映刚被杀时句柄释放有延迟, 一次 rmtree 常静默半失败留空壳
+            for _ in range(5):
+                shutil.rmtree(injected, ignore_errors=True)
+                if not os.path.exists(injected):
+                    break
+                time.sleep(0.6)
+            log('已清理注入草稿: %s%s' % (draft_name,
+                '' if not os.path.exists(injected) else ' ⚠ 仍有残留(被占用, 下次启动前清扫)'))
         rm_path = os.path.join(DRAFT_ROOT, 'root_meta_info.json')
         if os.path.exists(rm_path):
             m = json.load(open(rm_path, encoding='utf-8'))
@@ -283,6 +306,18 @@ def _cleanup_injected_draft(draft_name):
                 log('已同步 root_meta (移除 %s)' % draft_name)
     except Exception as e:
         log('清理注入草稿异常: %s' % e)
+
+
+def _sweep_zombie_drafts():
+    """启动剪映前清扫残留的 rd* 注入草稿. 上次渲染的清理发生在剪映仍开着时, rmtree 常被
+    编辑器占用的句柄部分挡掉(ignore_errors 静默失败), 留下空壳文件夹 — 实测 2 天积了 14 个,
+    首页一堆无预览坏卡片, 还会让剪映启动弹"草稿丢失". 启动前没有任何句柄, 必删得掉."""
+    try:
+        names = [d for d in os.listdir(DRAFT_ROOT) if d.startswith('rd')]
+    except OSError:
+        return
+    for name in names:
+        _cleanup_injected_draft(name)
 
 
 def find_main_pid():
@@ -426,6 +461,7 @@ def start_jianying_in_desktop(desktop=JY_DESKTOP):
     exe = config.find_jianying_exe()
     if not exe:
         log('未找到 JianyingPro.exe (检查 config.JY_APP_BASE)'); return None, hDesk
+    _sweep_zombie_drafts()  # 趁剪映没起, 清掉上次没删干净的 rd* 空壳
     # STARTUPINFO 指定 lpDesktop
     class STARTUPINFO(ctypes.Structure):
         _fields_ = [('cb', wintypes.DWORD),('lpReserved', wintypes.LPWSTR),('lpDesktop', wintypes.LPWSTR),
@@ -582,6 +618,7 @@ def start_jianying(exe_path=None):
         if not exe_path:
             log('未找到 JianyingPro.exe (检查 config.JY_APP_BASE)')
             return None
+    _sweep_zombie_drafts()  # 趁剪映没起, 清掉上次没删干净的 rd* 空壳
     wd_session(True)  # 先落看门狗会话标记再拉起进程 (强更链在启动后 ~30s 就开跑)
     subprocess.Popen([exe_path], cwd=os.path.dirname(exe_path))
     log('启动剪映: %s' % exe_path)
@@ -695,6 +732,7 @@ class Driver:
         self.capture_count = 0
         self.last_capture = None
         self.monitor_proc = None
+        self.injected_name = None  # 本次注入的草稿名 (main finally 杀完剪映后统一清理)
 
     def on_message(self, msg, data):
         if msg['type'] == 'error':
@@ -978,6 +1016,22 @@ class Driver:
                 return c
             time.sleep(0.3)
         return None
+
+    def _editor_usable(self, timeout=8):
+        """编辑器是否真的打开了: 工具栏能找到"导出"按钮. showCount 稳定会被首页偶发状态
+        误判 (实测: 卡片点击返回 ok 但编辑器根本没开, 后续 4 轮导出点击全打在首页上,
+        findmainbutton 扫不到按钮 → 回退坐标瞎点 → 任务失败). 首页没有"导出"按钮,
+        以它为判据最可靠."""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            try:
+                r = self.script.exports_sync.findmainbutton(json.dumps(['导出'], ensure_ascii=False))
+                if r.get('ok'):
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.5)
+        return False
 
     def wait_editor_ready(self, base_show, timeout=30):
         """点结果卡片后等编辑器就绪: showCount 增加(草稿打开触发SHOW) + 稳定1.5s无新SHOW."""
@@ -1274,7 +1328,7 @@ class Driver:
             search_term = draft_name
         if not inject_draft(src_draft_dir, draft_name):
             log('中止: 草稿素材缺失, 导出必被剪映拒绝 (原因见上方 ABORT 行)')
-            _cleanup_injected_draft(draft_name)
+            self.injected_name = draft_name  # finally 杀完剪映后统一清理
             return False
         emit_progress('inject', 10)
         time.sleep(2)  # 等剪映实时识别
@@ -1283,7 +1337,7 @@ class Driver:
         st = self.script.exports_sync.status()
         log('  dev=%s' % st.get('curDev'))
         if not st.get('curDev'):
-            log('dev 未获取, 中止'); _cleanup_injected_draft(draft_name); return False
+            log('dev 未获取, 中止'); self.injected_name = draft_name; return False
 
         # 2. 打开草稿: 桌面模式按草稿名在首页网格里定位卡片点击(不再用固定 caps['card'] 坐标),
         # 前台模式用搜索
@@ -1302,12 +1356,12 @@ class Driver:
                 if not res.get('ok'):
                     log('  findcard 失败: %s' % res.get('err'))
                     time.sleep(1); continue
-                if self.wait_editor_ready(base_show, timeout=12):
+                if self.wait_editor_ready(base_show, timeout=12) and self._editor_usable():
                     opened = True; break
-                log('  草稿未打开, 重试')
+                log('  草稿未打开(或编辑器未就绪), 重试')
                 time.sleep(1)
             if not opened:
-                log('草稿卡片8次未打开, 中止'); _cleanup_injected_draft(draft_name); return False
+                log('草稿卡片8次未打开, 中止'); self.injected_name = draft_name; return False
         else:
             log('点放大镜'); self.click_global2(caps['search_btn']['lx'], caps['search_btn']['ly'])
             time.sleep(1)
@@ -1387,7 +1441,7 @@ class Driver:
             else:
                 log('confirm 4次未触发渲染, 中止')
                 capture_failure_screen('export_fail')  # 诊断: 看导出环节屏幕上到底什么状态
-                _cleanup_injected_draft(draft_name); return False
+                self.injected_name = draft_name; return False
         emit_progress('done', 100)
 
         # 4. 关闭完成提示 (完成窗口 modal) + 关编辑器回首页
@@ -1404,8 +1458,9 @@ class Driver:
             log('点关闭编辑器(回首页)'); self.click_global2(caps['close_editor']['lx'], caps['close_editor']['ly'])
             time.sleep(2)
 
-        # 5. 清理注入的草稿 (文件夹 + root_meta 条目, 避免下次启动弹"丢失"对话框)
-        _cleanup_injected_draft(draft_name)
+        # 5. 注入草稿的清理不在此时做 — 剪映还开着, 编辑器句柄会让 rmtree 静默半失败
+        #    (留空壳文件夹, 实测 2 天积 14 个). 登记给 main() 的 finally, 杀完剪映再删.
+        self.injected_name = draft_name
 
         return ok
 
@@ -1536,8 +1591,18 @@ def main():
                 subprocess.run(['powershell','-NoProfile','-Command',
                     "Stop-Process -Id %d -Force -ErrorAction SilentlyContinue" % self_started_pid],
                     capture_output=True, timeout=10)
+                # 等进程真正退出 (句柄释放有延迟, 不等的话紧随其后的草稿清理又被挡成空壳)
+                import ctypes as _ct
+                _h = _ct.windll.kernel32.OpenProcess(0x00100000, False, self_started_pid)  # SYNCHRONIZE
+                if _h:
+                    _ct.windll.kernel32.WaitForSingleObject(_h, 15000)
+                    _ct.windll.kernel32.CloseHandle(_h)
                 log('已关闭桌面剪映 PID=%d' % self_started_pid)
             except: pass
+        # 注入草稿清理放在杀完剪映之后 (剪映开着时 rmtree 被句柄挡, 静默留空壳 — 见
+        # render_draft 第 5 步注释). 没删干净的由下次启动前的 _sweep_zombie_drafts 兜底.
+        if getattr(d, 'injected_name', None):
+            _cleanup_injected_draft(d.injected_name)
 
 if __name__ == '__main__':
     main()

@@ -200,8 +200,32 @@ def save_draft_background(draft_id, draft_folder, task_id):
                     except Exception as e:
                         logger.error(f"Task {task_id}: Download {task['type']} file failed: {str(e)}", exc_info=True)
                         # Continue processing other files, don't interrupt the entire process
-            
+                        # (但记入失败清单, 全部下载完后统一判失败 — 见下方)
+                        failed_downloads.append({
+                            'type': task['type'],
+                            'material_name': getattr(task.get('material'), 'material_name', '?'),
+                            'remote_url': getattr(task.get('material'), 'remote_url', '?'),
+                            'error': str(e)
+                        })
+
             logger.info(f"Task {task_id}: Concurrent download completed, downloaded {len(downloaded_paths)} files in total.")
+
+            if failed_downloads:
+                # 缺料的草稿包发到渲染端, 剪映会因素材丢失拒绝导出(表现为"点导出报错"),
+                # 渲染端只能报错回退 — 与其发不完整的包, 不如在这里直接判任务失败,
+                # 列明缺哪些素材, 用户重新上传即可解决.
+                names = ', '.join(sorted({f["material_name"] for f in failed_downloads}))
+                update_tasks_cache(task_id, {
+                    "status": "failed",
+                    "message": f"{len(failed_downloads)} material(s) failed to download: {names}",
+                    "progress": 100,
+                    "completed_files": completed_files,
+                    "total_files": len(download_tasks),
+                    "draft_url": ""
+                })
+                logger.error(f"Task {task_id} FAILED: {len(failed_downloads)} material(s) missing, abort before zip: "
+                             f"{failed_downloads}")
+                return
         
         # Update task status - Start saving draft information
         update_task_field(task_id, "progress", 70)
@@ -664,6 +688,7 @@ def download_script(draft_id: str, draft_folder: str = None, script_data: Dict =
         # Execute all download tasks concurrently
         downloaded_paths = []
         completed_files = 0
+        failed_downloads = []  # 下载失败清单 — 缺料草稿在剪映端无法渲染, 必须拦截
         if download_tasks:
             logger.info(f"Starting concurrent download of {len(download_tasks)} files...")
             
@@ -689,8 +714,25 @@ def download_script(draft_id: str, draft_folder: str = None, script_data: Dict =
                         logger.error(f"Failed to download {task['type']} file {task['args'][0]}: {str(e)}", exc_info=True)
                         logger.error("Download failed.")
                         # Continue processing other files, don't interrupt the entire process
-            
+                        # (但记入失败清单, 全部下载完后统一报错 — 见下方)
+                        _mat = task.get('material') or {}
+                        failed_downloads.append({
+                            'type': task['type'],
+                            'material_name': (_mat.get('material_name') if isinstance(_mat, dict)
+                                              else getattr(_mat, 'material_name', '?')),
+                            'remote_url': task['args'][0],
+                            'error': str(e)
+                        })
+
             logger.info(f"Concurrent download completed, downloaded {len(downloaded_paths)} files in total.")
+
+        if failed_downloads:
+            # 缺料的草稿包发到渲染端, 剪映会因素材丢失拒绝导出 — 直接返回失败并列明缺哪些素材,
+            # 与 save_draft_background 的拦截逻辑同源.
+            names = ', '.join(sorted({str(f['material_name']) for f in failed_downloads}))
+            logger.error(f"{len(failed_downloads)} material(s) missing, abort before writing draft: {failed_downloads}")
+            return {"success": False,
+                    "error": f"{len(failed_downloads)} material(s) failed to download: {names}"}
         
         """Write draft file content to file"""
         write_profile_content(draft_profile, os.path.join(draft_folder, draft_id), json.dumps(script_data, ensure_ascii=False))
