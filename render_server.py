@@ -773,6 +773,25 @@ def render_by_draft_id(draft_id):
     # 多租户: 只能渲染自己的草稿 (admin 不受限; 404 不泄露草稿是否存在)。
     if not _draft_owned(draft_id, current_user_id()):
         return jsonify({'error': 'draft folder not found: %s' % draft_id}), 404
+
+    # 渲染前先把内存缓存里的最新编辑落盘: 页面加素材只更新 DRAFT_CACHE, 不 save 的话
+    # 磁盘 draft_content.json 还是空壳 → 渲染器渲染空草稿 → 剪映空时间线拒导出
+    # (2026-08-24 实锤: 用户页面建草稿+加视频, 直接点 Render 两次全失败, 磁盘 0 轨道).
+    try:
+        _warmup_draft(draft_id)   # 冷草稿也先载入 (幂等)
+        _post_internal('save_draft', {'draft_id': draft_id}, user_id=current_user_id())
+    except Exception as e:
+        print('[render] 预保存草稿失败(继续): %s' % e, flush=True)
+
+    # 空草稿拦截: 0 轨道直接报清晰错误 (渲染空时间线剪映会拒导出, 表现为"点击失败")
+    try:
+        _cp = os.path.join(_resolve_draft_dir(draft_id) or '', 'draft_content.json')
+        if _cp and os.path.isfile(_cp):
+            _c = json.load(open(_cp, encoding='utf-8'))
+            if not (_c.get('tracks') or []):
+                return jsonify({'error': '草稿是空的 (0 条轨道) — 请先添加素材再渲染'}), 400
+    except Exception as e:
+        print('[render] 空草稿检查失败(继续): %s' % e, flush=True)
     # 先在剪映草稿目录按文件夹名直接找
     draft_dir = os.path.join(DRAFT_ROOT, draft_id)
     if not os.path.isdir(draft_dir):
