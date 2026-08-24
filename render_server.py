@@ -1301,7 +1301,17 @@ def api_list_drafts():
         _tasks = _tasks.values()
         for t in _tasks:
             dn = t.get('draft_name')
-            if not dn or t.get('status') != 'done' or not t.get('mp4_path'):
+            if not dn or t.get('status') != 'done':
+                continue
+            # 兜底: done 但 mp4_path 缺失 (下载线程回写丢失/服务重启) → 按命名约定探查本地缓存
+            if not t.get('mp4_path'):
+                import glob as _glob
+                for p in _glob.glob(os.path.join(VIDEOS, 'rd_%s_*.mp4' % t.get('task_id', 'X'))):
+                    if os.path.isfile(p):
+                        t['mp4_path'] = p
+                        t.setdefault('mp4_name', os.path.basename(p).split('rd_%s_' % t.get('task_id', 'X'))[-1])
+                        break
+            if not t.get('mp4_path'):
                 continue
             if dn not in _done or (t.get('created') or 0) > (_done[dn].get('created') or 0):
                 _done[dn] = t
