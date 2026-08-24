@@ -36,6 +36,9 @@ SETTINGS_SCHEMA = [
     # LocalSend 多播出口 IP. 多网卡/VPN 环境自动探测可能选错, 显式指定局域网 IP
     {'key': 'LOCALSEND_IF_IP', 'label': 'LocalSend 绑定 IP (留空自动探测局域网网卡)',
      'secret': False, 'group': 'tools', 'default': ''},
+    # 渲染引擎选择: ffmpeg 本地直渲(快/确定性) vs jianying 剪映节点(特效保真)
+    {'key': 'RENDER_ENGINE_PREFER', 'label': '渲染引擎优先 (ffmpeg=本地直渲 / jianying=剪映节点)',
+     'secret': False, 'group': 'tools', 'default': 'ffmpeg'},
 ]
 
 _KEYS = [s['key'] for s in SETTINGS_SCHEMA]
@@ -145,6 +148,9 @@ def _hot_patch(updates):
         if 'ASR_ENDPOINT' in updates: perceive.ASR_ENDPOINT = updates['ASR_ENDPOINT']
         if 'ASR_API_KEY' in updates: perceive.ASR_API_KEY = updates['ASR_API_KEY']
         if 'PREFER_ASR' in updates: perceive.PREFER_ASR = (updates['PREFER_ASR'] == '1')
+    cfg = sys.modules.get('config')
+    if cfg and 'RENDER_ENGINE_PREFER' in updates:
+        cfg.RENDER_ENGINE_PREFER = updates['RENDER_ENGINE_PREFER'].lower()
     config = sys.modules.get('config')
     if config:
         if 'ASR_ENDPOINT' in updates: config.ASR_ENDPOINT = updates.get('ASR_ENDPOINT', getattr(config, 'ASR_ENDPOINT', None))

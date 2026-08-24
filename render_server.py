@@ -859,13 +859,16 @@ def render_by_draft_id(draft_id):
     # === 分层渲染: 元素全部可 ffmpeg 直渲的草稿, 本地确定性渲染, 不走剪映 GUI ===
     # (剪映 GUI 路径的间歇性故障历史见 render_driver/render_service; 特效/贴纸等
     # 不可行元素才回退节点渲染 — analyze_draft_for_ffmpeg 判定)
-    try:
-        import ffmpeg_renderer as _fr
-        _content = json.load(open(os.path.join(draft_dir, 'draft_content.json'), encoding='utf-8')) \
-            if os.path.isfile(os.path.join(draft_dir, 'draft_content.json')) else None
-        _mode, _reasons = (_fr.analyze_draft_for_ffmpeg(_content) if _content else ('fallback', ['无法读取草稿']))
-    except Exception as e:
-        _mode, _reasons = 'fallback', ['分析异常: %s' % e]
+    if config.RENDER_ENGINE_PREFER == 'jianying':
+        _mode, _reasons = 'fallback', ['配置 RENDER_ENGINE_PREFER=jianying, 全部走剪映节点']
+    else:
+        try:
+            import ffmpeg_renderer as _fr
+            _content = json.load(open(os.path.join(draft_dir, 'draft_content.json'), encoding='utf-8')) \
+                if os.path.isfile(os.path.join(draft_dir, 'draft_content.json')) else None
+            _mode, _reasons = (_fr.analyze_draft_for_ffmpeg(_content) if _content else ('fallback', ['无法读取草稿']))
+        except Exception as e:
+            _mode, _reasons = 'fallback', ['分析异常: %s' % e]
     if _mode in ('direct', 'approximate'):
         _new_task(task_id, status='rendering', draft_name=draft_id, draft_dir=draft_dir,
                   user_id=uid, render_engine='ffmpeg-local',

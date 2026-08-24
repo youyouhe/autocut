@@ -111,6 +111,8 @@ for _d in (UPLOAD_DIR, GUI_UPLOAD_DIR, CACHE_DIR, ASSET_CACHE_DIR):
     os.makedirs(_d, exist_ok=True)
 
 # ============================================================ 渲染
+# 渲染引擎优先: 'ffmpeg' (默认, 常规草稿本地直渲, 特效回退剪映) / 'jianying' (全部走剪映节点)
+RENDER_ENGINE_PREFER = os.environ.get('RENDER_ENGINE_PREFER', 'ffmpeg').lower()
 RENDER_TIMEOUT = _int('RENDER_TIMEOUT', 600)          # 单任务渲染子进程超时 (秒)
 TASK_TTL = _int('TASK_TTL', 86400)                    # 任务记录保留时长 (秒)
 # 隔离桌面列表 (逗号分隔), 每个桌面一个并行渲染 worker
