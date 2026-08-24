@@ -141,6 +141,12 @@ def inject_draft(src_draft_dir, new_name=None):
         # 但可能在 render_uploads 其他历史草稿包里(素材名是内容 hash, 同名即同内容).
         # 三级查找回填成新草稿内的绝对路径(正斜杠, 与剪映格式一致); 拷贝进新草稿保证自包含.
         mats = c.get('materials', {}) if isinstance(c, dict) else {}
+        # 空时间线草稿(无任何轨道)点导出会弹"无法导出,时间线为空"错误框(按钮是"知道了"
+        # 不是"导出"), 驱动会误判成弹窗/点击问题空转4轮 — 提前识别直接中止.
+        # 实测: web 后端"编辑"流程重新生成的草稿出过 duration=0/无轨道/无素材的全空壳.
+        if not (c.get('tracks') or []):
+            log('ABORT 草稿时间线为空(无轨道无片段, duration=%s) — 剪映会拒绝导出' % c.get('duration'))
+            return None
         missing = []
         for mkey in ('videos', 'audios'):
             for mat in mats.get(mkey, []) or []:
