@@ -169,6 +169,10 @@ _DRAFT_ID_BODY_ROUTES = {
     '/add_video_keyframe', '/add_effect', '/add_sticker',
     '/query_script', '/query_draft', '/delete_segment', '/delete_track',
     '/delete_empty_tracks', '/save_draft', '/generate_draft_url',
+    # Phase3/4 编辑路由 (edit_impl)
+    '/update_segment', '/replace_material', '/update_text', '/add_fade',
+    '/add_filter', '/add_transition_to_segment', '/add_animation_to_segment',
+    '/split_segment', '/duplicate_segment', '/move_segment', '/reorder_track',
 }
 
 

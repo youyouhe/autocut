@@ -30,6 +30,9 @@ from add_effect_impl import add_effect_impl
 from add_sticker_impl import add_sticker_impl
 from create_draft import create_draft
 from delete_impl import query_draft_impl, delete_segment_impl, delete_track_impl, delete_empty_tracks_impl
+from edit_impl import (update_segment_impl, replace_material_impl, update_text_impl,
+                       add_fade_impl, add_filter_impl, add_transition_impl, add_animation_impl,
+                       split_segment_impl, duplicate_segment_impl, move_segment_impl, reorder_track_impl)
 from util import generate_draft_url as utilgenerate_draft_url, hex_to_rgb
 from pyJianYingDraft.text_segment import TextStyleRange, Text_style, Text_border
 
@@ -845,6 +848,93 @@ def delete_empty_tracks():
     except Exception as e:
         result["error"] = f"Error occurred while deleting empty tracks: {str(e)}. "
         return jsonify(result)
+
+def _edit_route(impl, data, **fixed):
+    """edit_impl 系列路由的公共封装: draft_id 必填 + 参数透传 + 统一错误格式."""
+    result = {"success": False, "output": "", "error": ""}
+    draft_id = data.get('draft_id')
+    if not draft_id:
+        result["error"] = "Hi, the required parameter 'draft_id' is missing."
+        return jsonify(result)
+    try:
+        kwargs = {k: v for k, v in data.items() if k not in ('draft_id', '_user_id')}
+        kwargs.update(fixed)
+        out = impl(draft_id=draft_id, **kwargs)
+        result["success"] = bool(out.get('ok', True))
+        result["output"] = out
+        if not out.get('ok', True):
+            result["error"] = out.get('error', '')
+        return jsonify(result)
+    except Exception as e:
+        result["error"] = f"Error occurred: {str(e)}. "
+        return jsonify(result)
+
+
+@app.route('/update_segment', methods=['POST'])
+def update_segment():
+    """修改已存在片段的时间/变换/速度/音量 (定位: segment_id 或 track_name+index)."""
+    return _edit_route(update_segment_impl, request.get_json())
+
+
+@app.route('/replace_material', methods=['POST'])
+def replace_material():
+    """按素材名替换素材文件 (所有引用片段同步换), 时间线不变."""
+    return _edit_route(replace_material_impl, request.get_json())
+
+
+@app.route('/update_text', methods=['POST'])
+def update_text():
+    """修改已存在文本片段的文字内容."""
+    return _edit_route(update_text_impl, request.get_json())
+
+
+@app.route('/add_fade', methods=['POST'])
+def add_fade():
+    """给音频片段加淡入淡出."""
+    return _edit_route(add_fade_impl, request.get_json())
+
+
+@app.route('/add_filter', methods=['POST'])
+def add_filter():
+    """给视频/图片段加滤镜."""
+    return _edit_route(add_filter_impl, request.get_json())
+
+
+@app.route('/add_transition_to_segment', methods=['POST'])
+def add_transition_to_segment():
+    """给已存在的视频/图片段加转场 (与下一段之间)."""
+    return _edit_route(add_transition_impl, request.get_json())
+
+
+@app.route('/add_animation_to_segment', methods=['POST'])
+def add_animation_to_segment():
+    """给已存在的视频/图片段加入/出场/组合动画."""
+    return _edit_route(add_animation_impl, request.get_json())
+
+
+@app.route('/split_segment', methods=['POST'])
+def split_segment():
+    """在指定时间点把一段拆两段."""
+    return _edit_route(split_segment_impl, request.get_json())
+
+
+@app.route('/duplicate_segment', methods=['POST'])
+def duplicate_segment():
+    """复制片段 (可偏移/跨轨道)."""
+    return _edit_route(duplicate_segment_impl, request.get_json())
+
+
+@app.route('/move_segment', methods=['POST'])
+def move_segment():
+    """搬移片段到新时间点 (可跨轨道, 重叠校验)."""
+    return _edit_route(move_segment_impl, request.get_json())
+
+
+@app.route('/reorder_track', methods=['POST'])
+def reorder_track():
+    """调整轨道层级 (render_index)."""
+    return _edit_route(reorder_track_impl, request.get_json())
+
 
 @app.route('/save_draft', methods=['POST'])
 def save_draft():

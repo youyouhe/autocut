@@ -391,6 +391,201 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "update_segment",
+            "description": "修改已存在片段的时间/变换/速度/音量。定位: segment_id 或 track_name+index (先 get_draft_timeline 确认)。改 B-roll 位置(transform_y)、缩放(scale)、某段时长/起点、变速、音量、透明度、旋转、翻转时用。改前必须先 get_draft_timeline 查现状。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "segment_id": {"type": "string", "description": "片段 id (优先; get_draft_timeline 有)"},
+                    "track_name": {"type": "string", "description": "轨道名 (与 index 配合定位)"},
+                    "index": {"type": "integer", "description": "片段在轨道中的序号, 从 0 开始"},
+                    "start": {"type": "number", "description": "新的成片起始秒"},
+                    "duration": {"type": "number", "description": "新的时长秒 (优先于 end)"},
+                    "end": {"type": "number", "description": "新的成片结束秒"},
+                    "speed": {"type": "number", "description": "变速倍数 (仅视频/音频段)"},
+                    "volume": {"type": "number", "description": "音量 0~1 (仅音视频段)"},
+                    "alpha": {"type": "number", "description": "透明度 0~1"},
+                    "rotation": {"type": "number", "description": "旋转角度(度)"},
+                    "scale_x": {"type": "number", "description": "水平缩放"},
+                    "scale_y": {"type": "number", "description": "垂直缩放"},
+                    "transform_x": {"type": "number", "description": "水平位置 -1~1"},
+                    "transform_y": {"type": "number", "description": "垂直位置 -1~1 (上半部分 0.4~0.6)"},
+                    "flip_horizontal": {"type": "boolean"}, "flip_vertical": {"type": "boolean"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "replace_material",
+            "description": "换素材不换时间线: 按素材名把素材文件换成另一个 (所有引用它的片段同步换)。'把这段视频换成另一个视频/这张图换成那张'时用, 比删除重加简单且不丢排版。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "old_material_name": {"type": "string", "description": "当前素材名 (get_draft_timeline 里段的 name 字段)"},
+                    "new_url": {"type": "string", "description": "新素材文件名或绝对路径 (本地素材, 会解析到素材库)"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["old_material_name", "new_url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_text",
+            "description": "改已存在文字片段的内容 (错别字修正/文案调整), 不用删了重加。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "新文字内容"},
+                    "segment_id": {"type": "string"}, "track_name": {"type": "string"}, "index": {"type": "integer"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_fade",
+            "description": "给音频片段加淡入淡出 (背景音乐常用: 结尾 2~3 秒淡出)。仅音频段。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "in_duration": {"type": "number", "description": "淡入秒数"},
+                    "out_duration": {"type": "number", "description": "淡出秒数"},
+                    "segment_id": {"type": "string"}, "track_name": {"type": "string"}, "index": {"type": "integer"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["in_duration", "out_duration"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_filter",
+            "description": "给视频/图片段加滤镜 (调色风格)。名称从 list_edit_enums 查不到时按提示里的候选名单选。仅视频/图片段。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filter_name": {"type": "string", "description": "滤镜名"},
+                    "intensity": {"type": "number", "description": "强度 0~100, 默认100"},
+                    "segment_id": {"type": "string"}, "track_name": {"type": "string"}, "index": {"type": "integer"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["filter_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_transition_to_segment",
+            "description": "给已存在的视频/图片段补加转场 (作用于该段与下一段之间)。add_video/add_image 时没带转场、事后补时用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "transition_name": {"type": "string", "description": "转场名 (list_edit_enums(kind='transition') 查)"},
+                    "duration": {"type": "number", "description": "转场时长秒"},
+                    "segment_id": {"type": "string"}, "track_name": {"type": "string"}, "index": {"type": "integer"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["transition_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_animation_to_segment",
+            "description": "给已存在的视频/图片段补加入场/出场/组合动画。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "animation_name": {"type": "string", "description": "动画名 (list_edit_enums(kind='image_intro'/'image_outro'/'image_combo') 查)"},
+                    "kind": {"type": "string", "description": "'intro'(入场,默认)/'outro'(出场)/'combo'(组合)"},
+                    "duration": {"type": "number", "description": "动画时长秒"},
+                    "segment_id": {"type": "string"}, "track_name": {"type": "string"}, "index": {"type": "integer"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["animation_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "split_segment",
+            "description": "在指定时间点把一段拆成两段 (源素材区间同步切分, 前后内容连续)。B-roll 精修/'这段只要前半部分''从这里剪开'时用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "at": {"type": "number", "description": "切点(成片时间轴秒), 必须在片段区间内"},
+                    "segment_id": {"type": "string"}, "track_name": {"type": "string"}, "index": {"type": "integer"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["at"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "duplicate_segment",
+            "description": "复制片段 (可指定偏移/落点/跨轨道)。'这段再来一遍''把这段复制到 30 秒处'时用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "segment_id": {"type": "string"}, "track_name": {"type": "string"}, "index": {"type": "integer"},
+                    "offset": {"type": "number", "description": "相对原位置偏移秒"},
+                    "at": {"type": "number", "description": "落到成片时间轴的秒 (优先于 offset)"},
+                    "to_track": {"type": "string", "description": "复制到别的轨道名"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_segment",
+            "description": "搬移片段到新时间点 (可跨轨道, 有重叠校验)。'这段往后挪 5 秒''把这段移到 B-roll 轨'时用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "number", "description": "新的成片起始秒"},
+                    "segment_id": {"type": "string"}, "track_name": {"type": "string"}, "index": {"type": "integer"},
+                    "to_track": {"type": "string", "description": "同时换到别的轨道名"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["to"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reorder_track",
+            "description": "调整轨道显示层级 (render_index 越大越靠上)。B-roll 被主视频盖住时把 B-roll 轨调大。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_name": {"type": "string", "description": "轨道名"},
+                    "relative_index": {"type": "integer", "description": "新层级值"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["track_name", "relative_index"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "delete_segment",
             "description": "从草稿删除一个轨道上的单个片段(段)。用户说'删掉某段/去掉后两段/这段不要了'时用。删除后底层会自动清理孤儿素材引用并重算总时长, 不用手动处理。定位方式二选一: (1) track_name + index —— 指定轨道第几个片段(从0开始); (2) segment_id —— 精确匹配(从 get_draft_timeline 拿不到 segment_id, 一般用 index 定位即可)。强烈建议: 先 get_draft_timeline 看清各段在哪个轨道、index 是几, 再删, 别凭记忆猜; 删一段后该轨道后面的段 index 会前移, 连删多段时从后往前删(index 不会乱)。删完可再 get_draft_timeline 复核。",
             "parameters": {
@@ -903,6 +1098,24 @@ def execute_tool(name, args, ctx):
         r = rs._post_internal('add_image', d, user_id=ctx.uid)
         result = {'ok': r.get('success', False), 'draft_id': did, 'track_name': track_name, 'start': start, 'end': end}
 
+    elif name in ('update_segment', 'replace_material', 'update_text', 'add_fade',
+                  'add_filter', 'add_transition_to_segment', 'add_animation_to_segment',
+                  'split_segment', 'duplicate_segment', 'move_segment', 'reorder_track'):
+        # Phase3/4 编辑类工具: 统一走 VectCutAPI 新路由; 冷草稿先 warmup (编辑要改缓存对象)
+        did = args.get('draft_id') or draft_id
+        if not did: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
+        rs._warmup_draft(did)
+        d = {'draft_id': did}
+        for k, v in args.items():
+            if k != 'draft_id':
+                d[k] = v
+        # new_url 也走素材路径解析 (裸文件名 → 素材库绝对路径)
+        if name == 'replace_material' and d.get('new_url'):
+            d['new_url'] = rs._resolve_asset_url(d['new_url'], uid=ctx.uid)
+        r = rs._post_internal(name, d, user_id=ctx.uid)
+        out = r.get('output') if isinstance(r.get('output'), dict) else None
+        result = out if out else {'ok': r.get('success', False), 'error': r.get('error')}
+
     elif name == 'delete_segment':
         did = args.get('draft_id') or draft_id
         if not did: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
@@ -1109,6 +1322,8 @@ def execute_tool(name, args, ctx):
                             dur_us = tr.get('duration', 0)
                             m = mat_by_id.get(s.get('material_id'), {})
                             seg_list.append({
+                                'segment_id': s.get('id'),          # 编辑定位锚点 (update/split/move 用)
+                                'index': len(seg_list),             # track_name+index 定位 (与 edit_impl 一致)
                                 'name': _mat_name(m),
                                 'source_name': _mat_source_name(m),  # 原始文件名(素材库里的真名), agent 拿它去 get_resource_detail 查内容; 视/图段有, 文字段无
                                 'type': t.get('type'),            # video/audio/text/sticker/...

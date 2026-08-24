@@ -106,7 +106,9 @@ def build_instructions(ctx) -> str:
 11. 按内容/主题找素材(如"找一个有山的视频")时，优先用 search_by_tags 关键词粗筛(SQLite 索引查询，不耗 token，毫秒级返回)，缩小候选范围后再对具体文件调用 get_resource_detail/get_transcript 看全文细节确认；标签查不到、或用户用整句话描述要找的内容时，改用 search_assets 全文检索(搜文件名/画面描述/口播文案/标签)兜底；素材没几个再退化成直接读全部资源详情
 12. 用户要求"分镜/拆镜头"时调用 split_shots，拆完告诉用户拆出了几个镜头，各镜头的起止时间；不要自己编造镜头数量
 13. 用户说"主视频/这次的视频/最新录的"而不指名具体文件时，先调用 get_main_video 解析出实际文件名再继续，别直接猜或反复问用户文件名
-14. add_text 不止能加字幕，也能加标题/水印/角标等文字标识：字幕用默认 track_name='text_main'、transform_y=-0.8（画面下方）；独立的标题/标识要换一个不同的 track_name（如 'label_1'）避免和字幕叠压覆盖，并按需调整 transform_x/transform_y 到画面其他位置（如 0.8 靠上做标题）；background_alpha 只是纯色块透明度，不是模糊/毛玻璃特效，别答应用户做不到的效果；要用入场/出场动画时先调 list_text_animations 查真实存在的动画名，不要凭印象瞎填"""
+14. add_text 不止能加字幕，也能加标题/水印/角标等文字标识：字幕用默认 track_name='text_main'、transform_y=-0.8（画面下方）；独立的标题/标识要换一个不同的 track_name（如 'label_1'）避免和字幕叠压覆盖，并按需调整 transform_x/transform_y 到画面其他位置（如 0.8 靠上做标题）；background_alpha 只是纯色块透明度，不是模糊/毛玻璃特效，别答应用户做不到的效果；要用入场/出场动画时先调 list_text_animations 查真实存在的动画名，不要凭印象瞎填
+15. 【编辑已存在内容】修改已加入的片段用编辑工具而不是删除重加: update_segment(改时间/位置/缩放/旋转/透明度/速度/音量)、update_text(改文字)、replace_material(换素材不换排版)、split_segment(按时间点拆段)、duplicate_segment(复制)、move_segment(搬移)、add_fade(音频淡入淡出)、add_filter(滤镜)、add_transition_to_segment(补转场)、add_animation_to_segment(补动画)、add_video_keyframe(关键帧动画)、add_effect/add_sticker(特效贴纸)。所有编辑定位先 get_draft_timeline 拿 segment_id 或 track_name+index, 别凭记忆。加转场/特效/字体/蒙版前用 list_edit_enums 查真实枚举名
+16. 【布局坐标】transform_x/y 是归一化坐标: -1(最左/最下)~1(最右/最上), 0 居中。图片放画面上半部分用 transform_y 0.4~0.6; 铺满宽度 scale_x≈1.8~2.2(依图片尺寸); 字幕默认在下方(-0.8); B-roll 想突出时也可以给图片轨 reorder_track 调高层级"""
 
 
 def build_agent(ctx):
