@@ -265,6 +265,85 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "add_video_keyframe",
+            "description": "给视频/图片段添加关键帧动画(两个关键帧之间插值渐变)。单点(property_type+time+value)或批量(property_types+times+values 三个等长数组)。属性: position_x/position_y(归一化位置)/rotation(度)/scale_x/scale_y/uniform_scale/alpha(透明度0~1)/saturation/contrast/brightness/volume(音量)。做'图片滑入''淡入淡出''缩放强调'等动态效果时用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_name": {"type": "string", "description": "轨道名, 默认 'video_main'"},
+                    "property_type": {"type": "string", "description": "单点模式的属性名"},
+                    "time": {"type": "number", "description": "单点模式的关键帧时间(成片时间轴秒)"},
+                    "value": {"type": "string", "description": "单点模式的值"},
+                    "property_types": {"type": "array", "items": {"type": "string"}, "description": "批量模式: 属性名数组"},
+                    "times": {"type": "array", "items": {"type": "number"}, "description": "批量模式: 时间数组"},
+                    "values": {"type": "array", "items": {"type": "string"}, "description": "批量模式: 值数组"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_effect",
+            "description": "给草稿添加视频特效(场景特效如'星空''胶片颗粒', 或人物特效)。先 list_edit_enums(kind='video_scene_effect' 或 'video_character_effect') 查可用特效名。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "effect_type": {"type": "string", "description": "特效资源名(从枚举查询拿)"},
+                    "effect_category": {"type": "string", "description": "'scene'(场景,默认) 或 'character'(人物)"},
+                    "start": {"type": "number", "description": "开始秒, 默认0"},
+                    "end": {"type": "number", "description": "结束秒, 默认3"},
+                    "track_name": {"type": "string", "description": "特效轨道名, 默认 'effect_01'"},
+                    "params": {"type": "array", "items": {}, "description": "特效参数列表(可省略用默认)"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["effect_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_sticker",
+            "description": "给草稿添加贴纸(表情/装饰/箭头等)。支持位置(transform)、透明度、翻转、旋转、缩放。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sticker_id": {"type": "string", "description": "贴纸资源 id"},
+                    "start": {"type": "number", "description": "开始秒"},
+                    "end": {"type": "number", "description": "结束秒, 默认显示5秒"},
+                    "transform_x": {"type": "number", "description": "水平位置 -1~1"},
+                    "transform_y": {"type": "number", "description": "垂直位置 -1~1"},
+                    "alpha": {"type": "number", "description": "透明度 0~1, 默认1"},
+                    "flip_horizontal": {"type": "boolean", "description": "水平翻转"},
+                    "flip_vertical": {"type": "boolean", "description": "垂直翻转"},
+                    "rotation": {"type": "number", "description": "旋转角度"},
+                    "scale_x": {"type": "number", "description": "水平缩放"},
+                    "scale_y": {"type": "number", "description": "垂直缩放"},
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）"}
+                },
+                "required": ["sticker_id", "start"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_edit_enums",
+            "description": "查询编辑可用的枚举值: 转场/蒙版/字体/视频特效/音效/图片动画名。加转场、选字体、加特效前先查这个, 别猜名字。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "description": "枚举类型: 'transition'(转场) / 'mask'(蒙版) / 'font'(字体) / 'video_scene_effect'(场景特效) / 'video_character_effect'(人物特效) / 'audio_effect'(音效) / 'image_intro'(图片入场动画) / 'image_outro'(图片出场动画) / 'image_combo'(图片组合动画)"}
+                },
+                "required": ["kind"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "add_audio",
             "description": "给草稿添加背景音乐/音频。",
             "parameters": {
@@ -750,6 +829,54 @@ def execute_tool(name, args, ctx):
     elif name == 'list_text_animations':
         names = rs._text_animation_names(args.get('kind', 'intro'))
         result = {'kind': args.get('kind'), 'names': names} if names else {'error': '动画名字表加载失败'}
+
+    elif name == 'add_video_keyframe':
+        did = args.get('draft_id') or draft_id
+        if not did: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
+        d = {'draft_id': did, 'track_name': args.get('track_name') or 'video_main'}
+        _passthrough(d, ('property_type', 'time', 'value', 'property_types', 'times', 'values'))
+        r = rs._post_internal('add_video_keyframe', d, user_id=ctx.uid)
+        result = {'ok': r.get('success', False), 'draft_id': did, 'error': r.get('error')}
+
+    elif name == 'add_effect':
+        did = args.get('draft_id') or draft_id
+        if not did: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
+        d = {'draft_id': did, 'effect_type': args.get('effect_type', '')}
+        _passthrough(d, ('effect_category', 'start', 'end', 'track_name', 'params'))
+        r = rs._post_internal('add_effect', d, user_id=ctx.uid)
+        result = {'ok': r.get('success', False), 'draft_id': did, 'error': r.get('error')}
+
+    elif name == 'add_sticker':
+        did = args.get('draft_id') or draft_id
+        if not did: return json.dumps({'error': '请先创建草稿'}, ensure_ascii=False)
+        d = {'draft_id': did, 'sticker_id': args.get('sticker_id', ''),
+             'start': args.get('start', 0), 'end': args.get('end', 5.0)}
+        _passthrough(d, ('transform_x', 'transform_y', 'alpha', 'flip_horizontal', 'flip_vertical',
+                         'rotation', 'scale_x', 'scale_y'))
+        r = rs._post_internal('add_sticker', d, user_id=ctx.uid)
+        result = {'ok': r.get('success', False), 'draft_id': did, 'error': r.get('error')}
+
+    elif name == 'list_edit_enums':
+        _ENUM_ENDPOINTS = {
+            'transition': 'get_transition_types',
+            'mask': 'get_mask_types',
+            'font': 'get_font_types',
+            'video_scene_effect': 'get_video_scene_effect_types',
+            'video_character_effect': 'get_video_character_effect_types',
+            'audio_effect': 'get_audio_effect_types',
+            'image_intro': 'get_intro_animation_types',
+            'image_outro': 'get_outro_animation_types',
+            'image_combo': 'get_combo_animation_types',
+        }
+        ep = _ENUM_ENDPOINTS.get(args.get('kind', ''))
+        if not ep:
+            result = {'error': 'kind 必须是: ' + '/'.join(_ENUM_ENDPOINTS)}
+        else:
+            r = rs._get_internal(ep, user_id=ctx.uid)
+            if isinstance(r, list):
+                result = {'kind': args.get('kind'), 'count': len(r), 'names': [str(x) for x in r][:400]}
+            else:
+                result = {'error': str(r)[:200]}
 
     elif name == 'add_audio':
         did = args.get('draft_id') or draft_id
