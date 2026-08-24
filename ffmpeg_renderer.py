@@ -90,6 +90,24 @@ def _probe_size(path):
         return 0, 0, 0
 
 
+def _probe_rotation(path):
+    """读视频旋转指令 (displaymatrix rotation). 手机竖拍横编码会带 90/270.
+    autorotate 在某些 ffmpeg 版本/编码组合下不可靠 (实测 hevc+rotation 有时不应用,
+    有时又把 rotation 元数据原样带进输出) —— 显式 transpose 才是确定性的."""
+    try:
+        r = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                            '-show_entries', 'side_data=rotation', '-of', 'csv=p=0',
+                            '-read_intervals', '%+#1', path],
+                           capture_output=True, text=True, timeout=15)
+        for line in (r.stdout or '').splitlines():
+            line = line.strip()
+            if line:
+                return abs(int(float(line))) % 360
+    except Exception:
+        pass
+    return 0
+
+
 def _ass_escape(text):
     return (text or '').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}').replace('\n', '\\N')
 
@@ -192,6 +210,10 @@ def render_draft_ffmpeg(draft_dir, out_path, content=None):
             if it['kind'] == 'video':
                 if speed != 1.0:
                     f += f',setpts=PTS/{speed}'
+                # 旋转交给 ffmpeg autorotate (解码时按 displaymatrix 转正, 实测正确).
+                # 不显式 transpose —— 会和 autorotate 叠加成双重旋转 (实测侧躺).
+                # 输出侧统一剥 rotation 元数据 (-metadata:s:v:0 rotate=0),
+                # 防"帧已转正 + 元数据又转一次"的显示侧躺 (a5bfac1c 实锤).
                 # 主视频: 缩放铺满画布 (cover+居中裁剪), 保证输出尺寸一致
                 f += (f',scale={W}:{H}:force_original_aspect_ratio=increase,'
                       f'crop={W}:{H},setsar=1,fps={fps}')
@@ -297,7 +319,8 @@ def render_draft_ffmpeg(draft_dir, out_path, content=None):
         # NVENC: 老版 (ffmpeg<5) 无 p1-p7 命名预设, 用 hq; 新版可 FFMPEG_NVENC_PRESET=p4 覆盖
         preset = os.environ.get('FFMPEG_NVENC_PRESET', 'hq')
         cmd += ['-c:v', vcodec, '-preset', preset, '-rc', 'vbr', '-cq', '22', '-b:v', '0']
-    cmd += ['-pix_fmt', 'yuv420p', '-movflags', '+faststart', out_path]
+    cmd += ['-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+            '-metadata:s:v:0', 'rotate=0', out_path]
 
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if r.returncode != 0:
