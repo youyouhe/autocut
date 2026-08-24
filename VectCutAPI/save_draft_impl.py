@@ -99,6 +99,9 @@ def save_draft_background(draft_id, draft_folder, task_id):
         update_media_metadata(script, task_id)
         
         download_tasks = []
+        failed_downloads = []  # 必须在 if download_tasks 外初始化: 本地素材(无下载任务)时
+                               # 变量缺失会在下方 if failed_downloads 处 NameError, save 静默崩溃
+                               # (2026-08-24 实锤: save 返回 success 但 0 字节落盘)
         
         audios = script.materials.audios
         if audios:

@@ -1,8 +1,8 @@
 {
     "canvas_config": {
-        "width": 1920,
         "height": 1080,
-        "ratio": "original"
+        "ratio": "original",
+        "width": 1920
     },
     "color_space": 0,
     "config": {
@@ -35,7 +35,7 @@
     "create_time": 0,
     "duration": 0,
     "extra_info": null,
-    "fps": 30,
+    "fps": 30.0,
     "free_render_index_mode_on": false,
     "group_container": null,
     "id": "00000000-0000-4000-8000-000000000000",
@@ -78,6 +78,7 @@
         "log_color_wheels": [],
         "loudnesses": [],
         "manual_deformations": [],
+        "masks": [],
         "material_animations": [],
         "material_colors": [],
         "multi_language_refs": [],
@@ -100,8 +101,7 @@
         "video_trackings": [],
         "videos": [],
         "vocal_beautifys": [],
-        "vocal_separations": [],
-        "masks": []
+        "vocal_separations": []
     },
     "mutable_config": null,
     "name": "",
