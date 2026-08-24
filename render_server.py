@@ -547,28 +547,56 @@ def _sync_remote_status(task_id):
             t['error'] = rt.get('error')
         if rt.get('mp4_name'):
             t['mp4_name'] = rt.get('mp4_name')
-        # done 且本地尚无 mp4 → 拉取到本地缓存
-        if t['status'] == 'done' and not t.get('mp4_path'):
-            local_mp4 = os.path.join(VIDEOS, 'rd_' + task_id + '_' + (t.get('mp4_name') or 'output.mp4'))
-            try:
-                rr = requests.get(f'{base_url}/render/download/{remote_id}',
-                                  headers=headers, timeout=300, stream=True)
-                if rr.ok:
-                    os.makedirs(VIDEOS, exist_ok=True)
-                    with open(local_mp4, 'wb') as out:
-                        for chunk in rr.iter_content(chunk_size=1 << 20):
-                            if chunk:
-                                out.write(chunk)
-                    t['mp4_path'] = local_mp4
-                    # 同一草稿只保留最新成片: 删除该草稿更早任务的 mp4, 避免反复渲染堆满磁盘
-                    _purge_stale_mp4(t)
-                else:
-                    t['error'] = 'download from render_service failed: %s' % rr.status_code
-            except Exception as e:
-                t['error'] = 'download from render_service failed: %s' % str(e)[:200]
+        # done 且本地尚无 mp4 → 后台线程拉取 (不阻塞状态查询: 107MB 流式下载要几分钟,
+        # 内联下载会把 render_status 客户端 30s 超时打爆, Agent 监控全部超时失败)
+        if t['status'] == 'done' and not t.get('mp4_path') and not t.get('_mp4_downloading'):
+            t['_mp4_downloading'] = True
+            threading.Thread(target=_download_mp4_bg, args=(task_id,), daemon=True).start()
         tasks[task_id] = t
     _persist(task_id)
     return t
+
+
+def _download_mp4_bg(task_id):
+    """后台拉取远程 mp4 到本地缓存 (与状态查询解耦; 完成后回写影子任务并清旧片)."""
+    with TASK_LOCK:
+        t = dict(tasks.get(task_id) or {})
+    if not t:
+        return
+    remote_id = t.get('remote_task_id')
+    base_url = t.get('render_url') or config.RENDER_SERVICE_URL
+    headers = _remote_headers(t.get('render_token'))
+    local_mp4 = os.path.join(VIDEOS, 'rd_' + task_id + '_' + (t.get('mp4_name') or 'output.mp4'))
+    try:
+        rr = requests.get(f'{base_url}/render/download/{remote_id}',
+                          headers=headers, timeout=600, stream=True)
+        if rr.ok:
+            os.makedirs(VIDEOS, exist_ok=True)
+            with open(local_mp4, 'wb') as out:
+                for chunk in rr.iter_content(chunk_size=1 << 20):
+                    if chunk:
+                        out.write(chunk)
+            with TASK_LOCK:
+                cur = tasks.get(task_id)
+                if cur is not None:
+                    cur['mp4_path'] = local_mp4
+                    cur.pop('_mp4_downloading', None)
+                    _purge_stale_mp4(cur)
+            _persist(task_id)
+            print('[render] mp4 后台下载完成: %s (%.1fMB)' % (
+                local_mp4, os.path.getsize(local_mp4) / 1048576), flush=True)
+        else:
+            with TASK_LOCK:
+                cur = tasks.get(task_id)
+                if cur is not None:
+                    cur.pop('_mp4_downloading', None)
+                    cur['error'] = 'download from render_service failed: %s' % rr.status_code
+    except Exception as e:
+        with TASK_LOCK:
+            cur = tasks.get(task_id)
+            if cur is not None:
+                cur.pop('_mp4_downloading', None)
+                cur['error'] = 'download from render_service failed: %s' % str(e)[:200]
 
 
 def task_cleanup_loop():
@@ -2480,32 +2508,36 @@ def perceive_result_api():
         except: pass
 
 
+# === 模块级初始化 (waitress 以 render_server:app 导入时 __name__ != '__main__',
+# 以下初始化必须在 import 时执行, 否则生产模式下任务恢复/看门狗/CORS 全部不生效 —
+# 2026-08-24 实锤: 每次重启内存任务全丢, render/status 全部 unknown task) ===
+print('render_server on http://%s:%d (render 转发至 %s)' % (
+    config.RENDER_SERVER_HOST, config.RENDER_SERVER_PORT,
+    config.RENDER_SERVICE_URL), flush=True)
+# 恢复历史任务 (本地影子任务; 远程 render_service 各自独立恢复)
+restore_tasks()
+
+# 过期任务清理 + 节点失联检测
+threading.Thread(target=task_cleanup_loop, daemon=True).start()
+threading.Thread(target=_node_watchdog_loop, daemon=True).start()
+
+# LocalSend 接收端: 按需启动 (前端"接收"按钮触发, 不随服务常驻)
+print('[localsend] 接收端待命 (前端点"接收"按钮启动), 端口 53317', flush=True)
+
+# CORS (仅配置的来源; 前端生产环境同源托管不需要)
+if config.CORS_ALLOW_ORIGINS:
+    @app.after_request
+    def after_request(response):
+        origin = request.headers.get('Origin', '')
+        if origin in config.CORS_ALLOW_ORIGINS:
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+            response.headers.add('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS')
+            response.headers.add('Vary', 'Origin')
+        return response
+
+
 if __name__ == '__main__':
-    print('render_server on http://%s:%d (render 转发至 %s)' % (
-        config.RENDER_SERVER_HOST, config.RENDER_SERVER_PORT,
-        config.RENDER_SERVICE_URL), flush=True)
-    # 恢复历史任务 (本地影子任务; 远程 render_service 各自独立恢复)
-    restore_tasks()
-
-    # 过期任务清理
-    threading.Thread(target=task_cleanup_loop, daemon=True).start()
-    threading.Thread(target=_node_watchdog_loop, daemon=True).start()  # 节点失联检测
-
-    # LocalSend 接收端: 按需启动 (前端"接收"按钮触发, 不随服务常驻)
-    print('[localsend] 接收端待命 (前端点"接收"按钮启动), 端口 53317', flush=True)
-
-    # CORS (仅配置的来源; 前端生产环境同源托管不需要)
-    if config.CORS_ALLOW_ORIGINS:
-        @app.after_request
-        def after_request(response):
-            origin = request.headers.get('Origin', '')
-            if origin in config.CORS_ALLOW_ORIGINS:
-                response.headers.add('Access-Control-Allow-Origin', origin)
-                response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-                response.headers.add('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS')
-                response.headers.add('Vary', 'Origin')
-            return response
-
     try:
         from waitress import serve
         print('[server] waitress 生产服务器', flush=True)
