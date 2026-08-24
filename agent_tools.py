@@ -1196,8 +1196,26 @@ def execute_tool(name, args, ctx):
         did = args.get('draft_id') or draft_id
         if not did: return json.dumps({'error': '没有草稿'}, ensure_ascii=False)
         rs._warmup_draft(did)  # 防冷草稿: save_draft 底层也要草稿在缓存里
+        # save 已异步化: 立即返回 task_id, 这里轮询 /query_draft_status 到完成,
+        # 等待发生在 agent worker 线程而不是 waitress 请求线程 (防止线程池被重 IO 拖死)
         r = rs._post_internal('save_draft', {'draft_id': did}, user_id=ctx.uid)
-        result = {'ok': r.get('success', False), 'draft_id': did}
+        if r.get('success') and isinstance(r.get('output'), dict) and r['output'].get('async'):
+            import time as _time
+            deadline = _time.time() + 120
+            status = 'running'
+            while _time.time() < deadline:
+                st = rs._post_internal('query_draft_status', {'task_id': did}, user_id=ctx.uid)
+                s = st.get('output') or {}
+                status = s.get('status') or st.get('status') or 'unknown'
+                if status in ('completed', 'failed'):
+                    break
+                _time.sleep(1.5)
+            if status == 'completed':
+                result = {'ok': True, 'draft_id': did}
+            else:
+                result = {'ok': False, 'draft_id': did, 'error': f'save 未完成: {status}'}
+        else:
+            result = {'ok': r.get('success', False), 'draft_id': did}
 
     elif name == 'render':
         did = args.get('draft_id') or draft_id

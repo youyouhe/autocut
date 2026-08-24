@@ -27,11 +27,11 @@ PORT="${RENDER_SERVER_PORT:-9010}"
 
 PY="${PYTHON:-python3}"
 if [ "$1" = "--daemon" ]; then
-    nohup "$PY" -m waitress --host="$HOST" --port="$PORT" --threads=8 \
+    nohup "$PY" -m waitress --host="$HOST" --port="$PORT" --threads=16 \
         --channel-timeout=900 render_server:app \
         > web.log 2> web.err.log &
     echo "web backend started (daemon) on $HOST:$PORT, pid=$!"
 else
-    exec "$PY" -m waitress --host="$HOST" --port="$PORT" --threads=8 \
+    exec "$PY" -m waitress --host="$HOST" --port="$PORT" --threads=16 \
         --channel-timeout=900 render_server:app
 fi

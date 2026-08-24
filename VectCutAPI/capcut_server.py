@@ -25,7 +25,7 @@ from add_text_impl import add_text_impl
 from add_subtitle_impl import add_subtitle_impl
 from add_image_impl import add_image_impl
 from add_video_keyframe_impl import add_video_keyframe_impl
-from save_draft_impl import save_draft_impl, query_task_status, query_script_impl
+from save_draft_impl import save_draft_impl, save_draft_background, query_task_status, query_script_impl
 from add_effect_impl import add_effect_impl
 from add_sticker_impl import add_sticker_impl
 from create_draft import create_draft
@@ -957,8 +957,20 @@ def save_draft():
         return jsonify(result)
     
     try:
-        # Call save_draft_impl method, start background task
-        draft_result = save_draft_impl(draft_id, draft_folder)
+        # 异步保存 (默认): 后台线程跑, 立即返回 task_id, 客户端用 /query_draft_status 轮询.
+        # save 是重 IO 操作 (每素材一次 ffprobe + 文件拷贝), 同步跑会占满 waitress 线程
+        # 把整个服务拖死 (2026-08-24 两次全站无响应都是这个). sync=true 保留旧行为
+        # (渲染前置保存等必须等完成的调用方用).
+        import threading as _threading
+        if data.get('sync'):
+            draft_result = save_draft_impl(draft_id, draft_folder)
+        else:
+            from save_task_cache import create_task
+            create_task(draft_id)
+            _threading.Thread(target=save_draft_background, args=(draft_id, draft_folder, draft_id), daemon=True).start()
+            result["success"] = True
+            result["output"] = {"task_id": draft_id, "async": True, "status": "running"}
+            return jsonify(result)
         
         result["success"] = True
         result["output"] = draft_result

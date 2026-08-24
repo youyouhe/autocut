@@ -783,7 +783,7 @@ def render_by_draft_id(draft_id):
     # (2026-08-24 实锤: 用户页面建草稿+加视频, 直接点 Render 两次全失败, 磁盘 0 轨道).
     try:
         _warmup_draft(draft_id)   # 冷草稿也先载入 (幂等)
-        _post_internal('save_draft', {'draft_id': draft_id}, user_id=current_user_id())
+        _post_internal('save_draft', {'draft_id': draft_id, 'sync': True}, user_id=current_user_id())
     except Exception as e:
         print('[render] 预保存草稿失败(继续): %s' % e, flush=True)
 
@@ -2510,7 +2510,7 @@ if __name__ == '__main__':
         from waitress import serve
         print('[server] waitress 生产服务器', flush=True)
         serve(app, host=config.RENDER_SERVER_HOST, port=config.RENDER_SERVER_PORT,
-              threads=8, channel_timeout=900)
+              threads=16, channel_timeout=900)
     except ImportError:
         print('[server] WARN: 未安装 waitress, 回退 Flask 开发服务器 (pip install waitress)', flush=True)
         app.run(host=config.RENDER_SERVER_HOST, port=config.RENDER_SERVER_PORT, debug=False)
