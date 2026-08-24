@@ -548,6 +548,7 @@ export interface SettingField {
   type: 'text' | 'secret' | 'bool';
   value: string | boolean;   // secret 字段为脱敏值 (如 ****ab12), bool 字段为 true/false, 仅供展示
   configured: boolean;
+  options?: { value: string; label: string }[];
 }
 export function getSettings(): Promise<SettingField[]> {
   return jsonFetch<SettingField[]>('/api/settings');

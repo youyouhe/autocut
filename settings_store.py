@@ -37,8 +37,11 @@ SETTINGS_SCHEMA = [
     {'key': 'LOCALSEND_IF_IP', 'label': 'LocalSend 绑定 IP (留空自动探测局域网网卡)',
      'secret': False, 'group': 'tools', 'default': ''},
     # 渲染引擎选择: ffmpeg 本地直渲(快/确定性) vs jianying 剪映节点(特效保真)
-    {'key': 'RENDER_ENGINE_PREFER', 'label': '渲染引擎优先 (ffmpeg=本地直渲 / jianying=剪映节点)',
-     'secret': False, 'group': 'tools', 'default': 'ffmpeg'},
+    {'key': 'RENDER_ENGINE_PREFER', 'label': '渲染引擎优先',
+     'secret': False, 'group': 'tools', 'default': 'ffmpeg',
+     'type': 'select', 'options': [
+         {'value': 'ffmpeg', 'label': 'ffmpeg 本地直渲 (快, 常规草稿推荐)'},
+         {'value': 'jianying', 'label': 'jianying 剪映节点 (特效保真)'}]},
 ]
 
 _KEYS = [s['key'] for s in SETTINGS_SCHEMA]
@@ -72,6 +75,7 @@ def get_settings():
         out.append({
             'key': s['key'], 'label': s['label'], 'secret': s['secret'], 'group': s['group'],
             'type': s.get('type', 'secret' if s['secret'] else 'text'),
+            'options': s.get('options'),
             'value': (val == '1') if is_bool else (_mask(val) if s['secret'] else val),
             'configured': bool(val),
         })

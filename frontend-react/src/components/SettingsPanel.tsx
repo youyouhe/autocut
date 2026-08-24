@@ -121,7 +121,22 @@ export default function SettingsPanel() {
                 <div className="space-y-5">
                   {groupFields.map(f => (
                     <div key={f.key}>
-                      {f.type === 'bool' ? (
+                      {f.type === 'select' ? (
+                        <>
+                          <label className="block text-[9px] uppercase tracking-widest opacity-50 mb-2">
+                            {f.label} {f.configured && <span className="text-emerald-700">· configured</span>}
+                          </label>
+                          <select
+                            value={(edits[f.key] as string) ?? (f.value as string) ?? ''}
+                            onChange={(e) => handleChange(f.key, e.target.value)}
+                            className="w-full border border-[#121212]/20 focus:border-[#121212] outline-none px-4 py-3 bg-white text-[#121212] font-light text-sm transition-colors cursor-pointer"
+                          >
+                            {(f.options || []).map(o => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                        </>
+                      ) : f.type === 'bool' ? (
                         <label className="flex items-center gap-3 cursor-pointer">
                           <input
                             type="checkbox"
