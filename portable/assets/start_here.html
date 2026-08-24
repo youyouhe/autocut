@@ -316,7 +316,14 @@
         '本包的配置已经对齐这个路径，无需手动指定。</div>' +
         '<div class="note"><span class="label">装完后必须禁用自动升级（下一步）</span>' +
         '剪映若自动升级到新版本，<strong>草稿格式和校准坐标都会跟着变</strong>，导致本节点渲染失败。' +
-        '装完剪映后请务必运行 <code>fix_update.bat</code> 把版本锁定在 5.9。</div>',
+        '装完剪映后请务必运行 <code>fix_update.bat</code> 把版本锁定在 5.9。</div>' +
+        '<div class="note"><span class="label">磁盘空间务必充足（重要）</span>' +
+        '剪映在磁盘空间不足时<strong>不报任何错误、直接拒绝工作</strong>（表现成"点了没反应"，' +
+        '渲染任务 8 连败都是这个形态）。每次渲染约写入 300MB～1GB 临时文件和成品。建议：' +
+        '① 磁盘保持 <strong>5GB 以上空闲</strong>；② 打开剪映 → 全局设置，把' +
+        '<strong>草稿位置、导出位置、预设保存位置、素材下载位置、渲染文件位置</strong>五项' +
+        '都改到空间最大的盘（例如 <code>D:\\autocut-render\\</code> 下）。' +
+        '其中<strong>草稿位置和导出位置</strong>改完记下来，第 3 步要填进 config.env 保持一致。</div>',
       faqs: [
         { q: "找不到 剪映专业版5.9.exe？",
           a: '如果 capcut-installer 文件夹是空的或文件名不一样，说明打包时漏放了安装器。' +
@@ -372,6 +379,19 @@
           '<li><code>RENDER_SERVICE_HOST=0.0.0.0</code> — 允许局域网访问，保持不变。</li>' +
           '<li><code>RENDER_SERVICE_PORT=9020</code> — 端口，没冲突就别改。</li>' +
           '<li>剪映路径三项保持注释（默认推导），除非你把剪映装到了非默认位置。</li>' +
+        '</ul>' +
+        '<p style="margin-top:16px;">如果你在第 2 步把剪映的「草稿位置 / 导出位置」改到了大空间盘，' +
+        '这里要<strong>追加三行路径配置</strong>（路径换成你自己的）：</p>' +
+        '<div class="code-block">JY_DRAFT_ROOT=D:\\autocut-render\\drafts\\JianyingPro Drafts' + '\n' +
+        'VIDEOS_DIR=D:\\autocut-render\\videos' + '\n' +
+        'ASSET_CACHE_DIR=D:\\autocut-render\\asset_cache</div>' +
+        '<ul style="margin:8px 0 12px; color:var(--ink-60); font-size:14px;">' +
+          '<li><code>JY_DRAFT_ROOT</code> 必须与剪映设置的「草稿位置」<strong>完全一致</strong>——' +
+          '剪映会自动把路径规范化成 <code>...\\JianyingPro Drafts</code> 子目录，' +
+          '以剪映设置页里显示的路径为准复制过来；</li>' +
+          '<li><code>VIDEOS_DIR</code> 与剪映「导出位置」一致（渲染成品 mp4 落在这里）；</li>' +
+          '<li><code>ASSET_CACHE_DIR</code> 是素材缓存（按内容自动去重），放大空间盘即可。' +
+          '两边路径不一致会导致驱动找不到草稿或找不到成品，任务失败。</li>' +
         '</ul>' +
         '<div class="note"><span class="label">记下这个令牌</span>' +
         '最后一步填回 web 后端时要用到<strong>同一个</strong>令牌。令牌是这台节点和你账号之间的密码，' +
@@ -470,7 +490,19 @@
         '如果这台节点连不上或提交失败，会自动回退到公共节点，并在任务上标注回退原因。</div>' +
         '<div class="note"><span class="label">日常使用</span>' +
         '以后每次要用，只要双击 <code>start.bat</code> 启动服务即可（校准过的机器不用再校准）。' +
-        '不用时双击 <code>stop.bat</code> 或直接关掉 start.bat 的窗口。config.env 改过后需要重启 start.bat 生效。</div>'
+        '不用时双击 <code>stop.bat</code> 或直接关掉 start.bat 的窗口。config.env 改过后需要重启 start.bat 生效。</div>',
+      faqs: [
+        { q: "渲染任务失败，日志显示「点草稿卡片没反应 / 编辑器未打开」？",
+          a: '最常见原因是<strong>磁盘空间不足</strong>——剪映没空间时静默拒绝打开草稿，不弹任何报错。' +
+             '检查草稿所在盘剩余空间（保持 5GB 以上），清理临时文件，或按第 2/3 步把路径挪到大空间盘后重启 start.bat。' },
+        { q: "剪映首页弹出「草稿列表异常 / 部分草稿丢失」？",
+          a: '多由磁盘满或非正常关机引起。驱动在每次渲染前会自动清理残留的注入草稿和索引，' +
+             '一般重启一次 start.bat 后下一个任务会自愈；若持续出现，双击 stop.bat 再 start.bat 完整重启一次。' },
+        { q: "任务报「素材缺失 / ABORT 素材空间不足」类错误？",
+          a: '「ABORT 素材缺失」说明草稿包里缺素材文件（上传不完整或历史素材被清理），' +
+             '在 web 后端重新提交任务或重新上传素材即可；「磁盘空间不足」按上一条处理。' +
+             '这两类错误都会在任务详情里写明具体缺什么，不再是莫名其妙的点击失败。' }
+      ]
     }
   ];
 
