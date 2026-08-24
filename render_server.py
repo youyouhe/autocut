@@ -204,7 +204,7 @@ def _draft_ownership_gate():
 #
 # 保留的本地结构 (供 render_status/render_download/render_list 影子缓存用):
 tasks = {}
-TASK_LOCK = threading.Lock()
+TASK_LOCK = threading.RLock()  # 可重入: _purge_stale_mp4 在锁内会再次 acquire
 
 # === 渲染节点消息互通 (心跳 + 事件推送接收端) ===
 # 节点 (render_service) 每 30s POST /internal/render-heartbeat, 任务状态变化 POST /internal/render-event.
