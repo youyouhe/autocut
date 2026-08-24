@@ -193,12 +193,25 @@ def replace_material_impl(draft_id: str, old_material_name: str, new_url: str,
         else:
             target_lists.append(getattr(script.materials, 'audios', None) or [])
             target_lists.append(imported.get('audios') or [])
+
+        # 新素材必须归位到草稿 assets/ 内: 直接写草稿外绝对路径, zip 打包时不含该文件,
+        # 渲染节点注入后素材缺失 → 剪映弹"草稿丢失"横幅吞掉卡片点击 (8 连败实锤).
+        import shutil as _shutil
+        here = os.path.dirname(os.path.abspath(__file__))
+        draft_dir = os.path.join(here, draft_id)
+        type_dir = 'audio' if audio_hit else ('image' if (video_hit and mtype == 'photo') else 'video')
+        in_draft = os.path.join(draft_dir, 'assets', type_dir, material.material_name)
+        os.makedirs(os.path.dirname(in_draft), exist_ok=True)
+        if os.path.abspath(new_url) != os.path.abspath(in_draft):
+            _shutil.copyfile(new_url, in_draft)
+        in_draft_fwd = in_draft.replace('\\', '/')
+
         for lst in target_lists:
             for mat in lst:
                 if not isinstance(mat, dict) or mat.get(name_key) != old_material_name:
                     continue
                 mat[name_key] = material.material_name
-                mat['path'] = material.path
+                mat['path'] = in_draft_fwd
                 mat['duration'] = material.duration
                 if video_hit:
                     mat['width'] = material.width

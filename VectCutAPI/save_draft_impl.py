@@ -112,7 +112,16 @@ def save_draft_background(draft_id, draft_folder, task_id):
                 if draft_folder:
                     audio.replace_path = build_asset_path(draft_folder, draft_id, "audio", material_name)
                 if not remote_url:
-                    logger.warning(f"Audio file {material_name} has no remote_url, skipping download.")
+                    local_p = getattr(audio, 'path', '') or ''
+                    dst = os.path.join(output_base_dir, f"{draft_id}/assets/audio/{material_name}")
+                    if local_p and os.path.isfile(local_p.replace('\\', '/')):
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copyfile(local_p.replace('\\', '/'), dst)
+                        logger.info(f"Audio file {material_name} copied from local path.")
+                    else:
+                        failed_downloads.append({
+                            'type': 'audio', 'material_name': material_name,
+                            'remote_url': '', 'error': f'无 remote_url 且本地文件不存在: {local_p!r}'})
                     continue
                 
                 # Add audio download task
@@ -135,7 +144,18 @@ def save_draft_background(draft_id, draft_folder, task_id):
                     if draft_folder:
                         video.replace_path = build_asset_path(draft_folder, draft_id, "image", material_name)
                     if not remote_url:
-                        logger.warning(f"Image file {material_name} has no remote_url, skipping download.")
+                        # 本地素材: 从 .path 就地拷贝进 assets (历史行为是跳过,
+                        # 导致重建的草稿目录无 assets, 渲染节点注入后素材丢失被拒导).
+                        local_p = getattr(video, 'path', '') or ''
+                        dst = os.path.join(output_base_dir, f"{draft_id}/assets/image/{material_name}")
+                        if local_p and os.path.isfile(local_p.replace('\\', '/')):
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            shutil.copyfile(local_p.replace('\\', '/'), dst)
+                            logger.info(f"Image file {material_name} copied from local path.")
+                        else:
+                            failed_downloads.append({
+                                'type': 'image', 'material_name': material_name,
+                                'remote_url': '', 'error': f'无 remote_url 且本地文件不存在: {local_p!r}'})
                         continue
                     
                     # Add image download task
@@ -151,7 +171,18 @@ def save_draft_background(draft_id, draft_folder, task_id):
                     if draft_folder:
                         video.replace_path = build_asset_path(draft_folder, draft_id, "video", material_name)
                     if not remote_url:
-                        logger.warning(f"Video file {material_name} has no remote_url, skipping download.")
+                        # 本地素材: 从 .path 就地拷贝进 assets (历史行为是跳过,
+                        # 导致重建的草稿目录无 assets, 渲染节点注入后素材丢失被拒导).
+                        local_p = getattr(video, 'path', '') or ''
+                        dst = os.path.join(output_base_dir, f"{draft_id}/assets/video/{material_name}")
+                        if local_p and os.path.isfile(local_p.replace('\\', '/')):
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            shutil.copyfile(local_p.replace('\\', '/'), dst)
+                            logger.info(f"Video file {material_name} copied from local path.")
+                        else:
+                            failed_downloads.append({
+                                'type': 'video', 'material_name': material_name,
+                                'remote_url': '', 'error': f'无 remote_url 且本地文件不存在: {local_p!r}'})
                         continue
                     
                     # Add video download task
@@ -161,6 +192,40 @@ def save_draft_background(draft_id, draft_folder, task_id):
                         'args': (remote_url, os.path.join(output_base_dir, f"{draft_id}/assets/video/{material_name}")),
                         'material': video
                     })
+
+        # imported_materials 兜底: load_template 载入的草稿 (服务重启后 warmup 的) 素材不在
+        # script.materials 而在 imported_materials (dict 形式) — 不补的话 save 会以为"无素材",
+        # 重建出 0 assets 的空草稿目录, 渲染节点注入后素材丢失被拒导 (2026-08-24 实锤).
+        _imported = getattr(script, 'imported_materials', {}) or {}
+        for _mkey, _type_dir in (('videos', 'video'), ('audios', 'audio')):
+            for _m in (_imported.get(_mkey) or []):
+                if not isinstance(_m, dict):
+                    continue
+                _mname = _m.get('material_name') or _m.get('name')
+                if not _mname:
+                    continue
+                _remote = (_m.get('remote_url') or '').strip()
+                _local = (_m.get('path') or '').replace('\\', '/')
+                _dir = 'image' if (_m.get('material_type') == 'photo' or _m.get('type') == 'photo') else _type_dir
+                _dst = os.path.join(output_base_dir, f"{draft_id}/assets/{_dir}/{_mname}")
+                _already = any(t['args'][1] == _dst for t in download_tasks) or os.path.isfile(_dst)
+                if _already:
+                    continue
+                if _remote:
+                    download_tasks.append({
+                        'type': _dir,
+                        'func': download_file,
+                        'args': (_remote, _dst),
+                        'material': None
+                    })
+                elif _local and os.path.isfile(_local):
+                    os.makedirs(os.path.dirname(_dst), exist_ok=True)
+                    shutil.copyfile(_local, _dst)
+                    logger.info(f"imported material {_mname} copied from local path.")
+                else:
+                    failed_downloads.append({
+                        'type': _dir, 'material_name': _mname,
+                        'remote_url': _remote, 'error': f'无 remote_url 且本地文件不存在: {_local!r}'})
 
         update_task_field(task_id, "message", f"Collected {len(download_tasks)} download tasks in total")
         update_task_field(task_id, "progress", 10)
@@ -544,6 +609,13 @@ def update_media_metadata(script, task_id=None):
     for track_name, track in script.tracks.items():
         for segment in track.segments:
             max_duration = max(max_duration, segment.end)
+    # imported_tracks 也算 (load_template 载入的草稿轨道全在这, 不算会重算成 0 毁掉时长)
+    for track in getattr(script, 'imported_tracks', []) or []:
+        for segment in track.segments:
+            try:
+                max_duration = max(max_duration, segment.end)
+            except Exception:
+                continue
     script.duration = max_duration
     logger.info(f"Updated script total duration to: {script.duration} microseconds.")
     
@@ -638,7 +710,16 @@ def download_script(draft_id: str, draft_folder: str = None, script_data: Dict =
                     audio['path']=build_asset_path(draft_folder, draft_id, "audio", material_name)
                     logger.debug(f"Local path for audio {material_name}: {audio['path']}")
                 if not remote_url:
-                    logger.warning(f"Audio file {material_name} has no remote_url, skipping download.")
+                    local_p = getattr(audio, 'path', '') or ''
+                    dst = os.path.join(output_base_dir, f"{draft_id}/assets/audio/{material_name}")
+                    if local_p and os.path.isfile(local_p.replace('\\', '/')):
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copyfile(local_p.replace('\\', '/'), dst)
+                        logger.info(f"Audio file {material_name} copied from local path.")
+                    else:
+                        failed_downloads.append({
+                            'type': 'audio', 'material_name': material_name,
+                            'remote_url': '', 'error': f'无 remote_url 且本地文件不存在: {local_p!r}'})
                     continue
                 
                 # Add audio download task
@@ -661,7 +742,18 @@ def download_script(draft_id: str, draft_folder: str = None, script_data: Dict =
                     if draft_folder:
                         video['path'] = build_asset_path(draft_folder, draft_id, "image", material_name)
                     if not remote_url:
-                        logger.warning(f"Image file {material_name} has no remote_url, skipping download.")
+                        # 本地素材: 从 .path 就地拷贝进 assets (历史行为是跳过,
+                        # 导致重建的草稿目录无 assets, 渲染节点注入后素材丢失被拒导).
+                        local_p = getattr(video, 'path', '') or ''
+                        dst = os.path.join(output_base_dir, f"{draft_id}/assets/image/{material_name}")
+                        if local_p and os.path.isfile(local_p.replace('\\', '/')):
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            shutil.copyfile(local_p.replace('\\', '/'), dst)
+                            logger.info(f"Image file {material_name} copied from local path.")
+                        else:
+                            failed_downloads.append({
+                                'type': 'image', 'material_name': material_name,
+                                'remote_url': '', 'error': f'无 remote_url 且本地文件不存在: {local_p!r}'})
                         continue
                     
                     # Add image download task
@@ -677,7 +769,18 @@ def download_script(draft_id: str, draft_folder: str = None, script_data: Dict =
                     if draft_folder:
                         video['path'] = build_asset_path(draft_folder, draft_id, "video", material_name)
                     if not remote_url:
-                        logger.warning(f"Video file {material_name} has no remote_url, skipping download.")
+                        # 本地素材: 从 .path 就地拷贝进 assets (历史行为是跳过,
+                        # 导致重建的草稿目录无 assets, 渲染节点注入后素材丢失被拒导).
+                        local_p = getattr(video, 'path', '') or ''
+                        dst = os.path.join(output_base_dir, f"{draft_id}/assets/video/{material_name}")
+                        if local_p and os.path.isfile(local_p.replace('\\', '/')):
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            shutil.copyfile(local_p.replace('\\', '/'), dst)
+                            logger.info(f"Video file {material_name} copied from local path.")
+                        else:
+                            failed_downloads.append({
+                                'type': 'video', 'material_name': material_name,
+                                'remote_url': '', 'error': f'无 remote_url 且本地文件不存在: {local_p!r}'})
                         continue
                     
                     # Add video download task
