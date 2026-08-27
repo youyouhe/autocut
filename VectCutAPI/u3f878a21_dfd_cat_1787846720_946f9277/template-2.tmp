@@ -122,7 +122,332 @@
         "stickers": [],
         "tail_leaders": [],
         "text_templates": [],
-        "texts": [],
+        "texts": [
+            {
+                "id": "00e2c0afc834437eb725ac281e5e1e80",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 12], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"刚才不是那个直播了尼泊尔\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "5cbb616fa02049199edef9ec505a6bce",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 2], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"这个\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "82f9c835c80e457898cb1d03a8738dca",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 7], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"泥石流的事儿吗\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "4a7d8ab3b64a424fb89d9f76ff081da5",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 7], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"这样给我抬走了\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "4e63f6b3fda441f5bffb0e09e297667a",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 7], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"怎么就违规了呢\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "18a375f8cb9c4f22bd73a7249b92634c",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 4], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"没太懂啊\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "11e090b8a31c4546a7915cd5ae027904",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 12], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"我只想传个画面给大家看看\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "4a0f52179cfe4e74848d1ac23f51420c",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 6], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"哎呀 无奈呀\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "671e6f50b3054eb9ac955d63ef25e082",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 10], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"听说这个上游这个冰川\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "653ffd1604694770b2c3eca44e9401dc",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 4], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"出了问题\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "2917bcd9e38441e1a7ca91f25dd46e0b",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 13], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"找一段素材给大家可以看一看\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            },
+            {
+                "id": "3b4bc2d59be5469ebaf23b92cffc0441",
+                "content": "{\"styles\": [{\"fill\": {\"alpha\": 1.0, \"content\": {\"render_type\": \"solid\", \"solid\": {\"alpha\": 1, \"color\": [1.0, 1.0, 1.0]}}}, \"range\": [0, 4], \"size\": 6, \"bold\": false, \"italic\": false, \"underline\": false, \"strokes\": [], \"font\": {\"id\": \"6807742980271641102\", \"path\": \"C:/思源粗宋.ttf\"}}], \"text\": \"逝者安息\"}",
+                "typesetting": 0,
+                "alignment": 1,
+                "letter_spacing": 0.0,
+                "line_spacing": 0.02,
+                "line_feed": 1,
+                "line_max_width": 0.82,
+                "force_apply_line_max_width": false,
+                "check_flag": 7,
+                "type": "text",
+                "fixed_width": 648,
+                "fixed_height": -1,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": "",
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_source_platform": 0,
+                "font_team_id": "",
+                "font_title": "none",
+                "font_url": "",
+                "fonts": []
+            }
+        ],
         "time_marks": [],
         "transitions": [],
         "video_effects": [],
@@ -279,7 +604,7 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "69df52d447164d7b83f5f7b605f16252",
+                    "id": "9918e6888c2143cabb21ade55fd10a84",
                     "material_id": "e27c1c2f28d63cf89f01957c08b76823",
                     "target_timerange": {
                         "start": 0,
@@ -293,9 +618,7 @@
                     },
                     "speed": 1.0,
                     "volume": 1.0,
-                    "extra_material_refs": [
-                        "261db75e2cf64882ae5b0e0a185ccf66"
-                    ],
+                    "extra_material_refs": [],
                     "clip": {
                         "alpha": 1.0,
                         "flip": {
@@ -336,7 +659,7 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "dc3482791bcd433b9446f3e4c774574d",
+                    "id": "d83ed2d8a471498d918d971554452f2a",
                     "material_id": "185bd650892a3bab9186d4c5c5478c6a",
                     "target_timerange": {
                         "start": 29984901,
@@ -350,9 +673,7 @@
                     },
                     "speed": 1.0,
                     "volume": 1.0,
-                    "extra_material_refs": [
-                        "e44ea28e12b54b5da556c75ecdb32ef3"
-                    ],
+                    "extra_material_refs": [],
                     "clip": {
                         "alpha": 1.0,
                         "flip": {
@@ -393,7 +714,7 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "7eb2e7f5188e49efbe0fbadf4299cdfa",
+                    "id": "08a8167227964789ba120c235546edea",
                     "material_id": "6fdf4e18f55d32feade210729f2916bc",
                     "target_timerange": {
                         "start": 51423001,
@@ -407,9 +728,7 @@
                     },
                     "speed": 1.0,
                     "volume": 1.0,
-                    "extra_material_refs": [
-                        "b65754f55dc34f7bb165ecec91b35b7a"
-                    ],
+                    "extra_material_refs": [],
                     "clip": {
                         "alpha": 1.0,
                         "flip": {
@@ -450,7 +769,7 @@
                     "track_attribute": 0,
                     "track_render_index": 0,
                     "visible": true,
-                    "id": "b646552290974d2d9a60f14506951309",
+                    "id": "a8216920fca44d32b4a7c65a05d6aebf",
                     "material_id": "5b3a9c6539a331f4b4ddc904bd05faf9",
                     "target_timerange": {
                         "start": 128583501,
@@ -464,9 +783,7 @@
                     },
                     "speed": 1.0,
                     "volume": 1.0,
-                    "extra_material_refs": [
-                        "ab983c853ef14b70a880c561a4e25413"
-                    ],
+                    "extra_material_refs": [],
                     "clip": {
                         "alpha": 1.0,
                         "flip": {
@@ -496,6 +813,580 @@
                 }
             ],
             "type": "video"
+        },
+        {
+            "attribute": 0,
+            "flag": 0,
+            "id": "6399354a4b1849dd997b281af7f9ef5a",
+            "is_default_name": false,
+            "name": "subtitle",
+            "segments": [
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "865de8b6b2014b0188fa791807919d93",
+                    "material_id": "00e2c0afc834437eb725ac281e5e1e80",
+                    "target_timerange": {
+                        "start": 0,
+                        "duration": 3240000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "700ae8b700f044239887a0894d697f22",
+                    "material_id": "5cbb616fa02049199edef9ec505a6bce",
+                    "target_timerange": {
+                        "start": 3240000,
+                        "duration": 619000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "82d62036e5e34561b4bc715e9d34a8b0",
+                    "material_id": "82f9c835c80e457898cb1d03a8738dca",
+                    "target_timerange": {
+                        "start": 4379000,
+                        "duration": 1241000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "974c1b9d8683436881af77e4ba2bc4f2",
+                    "material_id": "4a7d8ab3b64a424fb89d9f76ff081da5",
+                    "target_timerange": {
+                        "start": 5620000,
+                        "duration": 1139000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "77be9ba9cb334a669a661e20bac89e51",
+                    "material_id": "4e63f6b3fda441f5bffb0e09e297667a",
+                    "target_timerange": {
+                        "start": 8380000,
+                        "duration": 1360000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "2030e14fbe30438da2789f145c7987c5",
+                    "material_id": "18a375f8cb9c4f22bd73a7249b92634c",
+                    "target_timerange": {
+                        "start": 9740000,
+                        "duration": 980000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "f6a5d4ec133c4ab2969796b8a5f72cd3",
+                    "material_id": "11e090b8a31c4546a7915cd5ae027904",
+                    "target_timerange": {
+                        "start": 11279000,
+                        "duration": 3121000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "fb933dc02266435ebcc23a59503d51ac",
+                    "material_id": "4a0f52179cfe4e74848d1ac23f51420c",
+                    "target_timerange": {
+                        "start": 14980000,
+                        "duration": 1559000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "b16940ec47b440f9a19f79b8a9acc0ac",
+                    "material_id": "671e6f50b3054eb9ac955d63ef25e082",
+                    "target_timerange": {
+                        "start": 17239000,
+                        "duration": 2800000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "d04155ea68df47e7a4e082b2464d3ec6",
+                    "material_id": "653ffd1604694770b2c3eca44e9401dc",
+                    "target_timerange": {
+                        "start": 21179000,
+                        "duration": 1720000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "a526ef85864c46ba846c56cc4578d358",
+                    "material_id": "2917bcd9e38441e1a7ca91f25dd46e0b",
+                    "target_timerange": {
+                        "start": 23620000,
+                        "duration": 2099000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                },
+                {
+                    "enable_adjust": true,
+                    "enable_color_correct_adjust": false,
+                    "enable_color_curves": true,
+                    "enable_color_match_adjust": false,
+                    "enable_color_wheels": true,
+                    "enable_lut": true,
+                    "enable_smart_color_adjust": false,
+                    "last_nonzero_volume": 1.0,
+                    "reverse": false,
+                    "track_attribute": 0,
+                    "track_render_index": 0,
+                    "visible": true,
+                    "id": "56214402ade3490a8d38b4640962d30c",
+                    "material_id": "3b4bc2d59be5469ebaf23b92cffc0441",
+                    "target_timerange": {
+                        "start": 26399000,
+                        "duration": 1921000
+                    },
+                    "common_keyframes": [],
+                    "keyframe_refs": [],
+                    "source_timerange": null,
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "extra_material_refs": [],
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {
+                            "horizontal": false,
+                            "vertical": false
+                        },
+                        "rotation": 0.0,
+                        "scale": {
+                            "x": 1.0,
+                            "y": 1.0
+                        },
+                        "transform": {
+                            "x": 0.0,
+                            "y": -0.8
+                        }
+                    },
+                    "uniform_scale": {
+                        "on": true,
+                        "value": 1.0
+                    },
+                    "render_index": 15999
+                }
+            ],
+            "type": "text"
         }
     ],
     "update_time": 0,

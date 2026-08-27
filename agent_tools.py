@@ -1303,6 +1303,10 @@ def execute_tool(name, args, ctx):
         else:
             r = rs._get_internal(f"render/status/{task_id}", user_id=ctx.uid)
             result = r if isinstance(r, dict) else {'error': str(r)}
+        # 防误读标注: agent 两次把任务 duration(渲染耗时) 当成片长汇报给用户
+        if isinstance(result, dict) and result.get('status') == 'done':
+            result['_note'] = ('duration 字段 = 渲染耗时(秒), 不是视频内容时长! '
+                               '成片实际时长 = 草稿时间线的 duration_s; 汇报时别拿 duration 当片长')
 
     elif name == 'bsk_run':
         cmd = (args.get('command') or '').strip()
