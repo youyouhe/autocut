@@ -115,6 +115,12 @@ for _d in (UPLOAD_DIR, GUI_UPLOAD_DIR, CACHE_DIR, ASSET_CACHE_DIR):
 RENDER_ENGINE_PREFER = os.environ.get('RENDER_ENGINE_PREFER', 'ffmpeg').lower()
 RENDER_TIMEOUT = _int('RENDER_TIMEOUT', 600)          # 单任务渲染子进程超时 (秒)
 TASK_TTL = _int('TASK_TTL', 86400)                    # 任务记录保留时长 (秒)
+# 中间产物自动清理 (render_service housekeeping_loop): 节点自治 TTL, 不依赖后端
+MP4_TTL_DAYS = _int('MP4_TTL_DAYS', 3)               # 成品 mp4 保留天数 (用户下载窗口)
+UPLOADS_TTL_HOURS = _int('UPLOADS_TTL_HOURS', 24)    # render_uploads 草稿目录+zip 保留小时
+LOGS_TTL_DAYS = _int('LOGS_TTL_DAYS', 7)             # run_*.log 日志 + shots 失败截图保留天数
+TEMP_TTL_DAYS = _int('TEMP_TTL_DAYS', 7)             # %TEMP% 旧文件保留天数 (frida 残留会积几十GB)
+DISK_LOW_WATER_GB = _int('DISK_LOW_WATER_GB', 10)    # C 盘低水位: 低于则 TTL 压到 1 天激进清理
 # 隔离桌面列表 (逗号分隔), 每个桌面一个并行渲染 worker
 DESKTOP_NAMES = [d.strip() for d in os.environ.get(
     'DESKTOP_NAMES', 'JYRender_0').split(',') if d.strip()]

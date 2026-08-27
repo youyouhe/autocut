@@ -336,6 +336,10 @@ def render_pool_worker():
         finally:
             release_desktop(desk)
             RENDER_QUEUE.task_done()
+            try:
+                _housekeeping_once()   # 任务结束顺手清一轮中间产物 (轻量)
+            except Exception:
+                pass
 
 
 def _restart_jianying_and_sweep():
@@ -377,6 +381,126 @@ def task_cleanup_loop():
                 pass
 
 
+# === 中间产物自动清理 (housekeeping) ===
+def _free_gb(path):
+    """path 所在盘剩余空间 (GB), 失败返回 None"""
+    try:
+        import ctypes
+        free = ctypes.c_ulonglong(0); total = ctypes.c_ulonglong(0)
+        if ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                os.path.splitdrive(os.path.abspath(path))[0] + os.sep,
+                ctypes.byref(free), ctypes.byref(total), None):
+            return free.value / (1024 ** 3)
+    except Exception:
+        pass
+    return None
+
+
+def _housekeeping_once(aggressive=False):
+    """清一轮中间产物. aggressive=True (低水位触发) 时所有 TTL 压到 1 天.
+    安全规则: 跳过 queued/rendering 任务的草稿目录与成品 mp4; 单项失败静默不影响其他;
+    只清驱动命名的 rd*.mp4 (用户手动导出的成品不碰); uploads 里的素材已有 asset_cache
+    硬链接兜底, 删目录不丢内容."""
+    now = time.time()
+    mp4_ttl = 86400 if aggressive else config.MP4_TTL_DAYS * 86400
+    up_ttl = 3600 if aggressive else config.UPLOADS_TTL_HOURS * 3600
+    log_ttl = 86400 if aggressive else config.LOGS_TTL_DAYS * 86400
+    tmp_ttl = 86400 if aggressive else config.TEMP_TTL_DAYS * 86400
+    with TASK_LOCK:
+        active = set()
+        for v in tasks.values():
+            if v.get('status') in ('queued', 'rendering'):
+                active.add(v.get('draft_name') or '')
+                if v.get('mp4_name'):
+                    active.add(v['mp4_name'])
+    removed = {}
+
+    def _rm(path):
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+                return 1
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+                return 1 if not os.path.exists(path) else 0
+        except OSError:
+            pass
+        return 0
+
+    # 1) 成品 mp4 (只清 rd*.mp4)
+    n = 0
+    try:
+        for f in os.listdir(VIDEOS):
+            if not (f.startswith('rd') and f.endswith('.mp4')) or f in active:
+                continue
+            p = os.path.join(VIDEOS, f)
+            if now - os.path.getmtime(p) > mp4_ttl:
+                n += _rm(p)
+    except OSError:
+        pass
+    removed['mp4'] = n
+
+    # 2) render_uploads 草稿目录 + zip
+    n = 0
+    try:
+        for e in os.listdir(EXTRACT_ROOT):
+            if e in active:
+                continue
+            p = os.path.join(EXTRACT_ROOT, e)
+            try:
+                if now - os.path.getmtime(p) <= up_ttl:
+                    continue
+            except OSError:
+                continue
+            if os.path.isdir(p) or e.endswith('.zip'):
+                n += _rm(p)
+    except OSError:
+        pass
+    removed['uploads'] = n
+
+    # 3) 渲染日志 + 失败截图
+    n = 0
+    for d in (os.path.join(HERE, 'logs'), os.path.join(HERE, 'shots')):
+        try:
+            for f in os.listdir(d):
+                p = os.path.join(d, f)
+                if os.path.isfile(p) and now - os.path.getmtime(p) > log_ttl:
+                    n += _rm(p)
+        except OSError:
+            pass
+    removed['logs_shots'] = n
+
+    # 4) %TEMP% 旧文件 (frida 注入残留, 实测积到 17.8GB/5.7万文件; 占用中的自动跳过)
+    n = 0
+    tmp_root = os.environ.get('TEMP') or os.path.join(
+        os.path.expanduser('~'), 'AppData', 'Local', 'Temp')
+    cut = now - tmp_ttl
+    for root, _dirs, files in os.walk(tmp_root):
+        for f in files:
+            p = os.path.join(root, f)
+            try:
+                if os.path.getmtime(p) < cut:
+                    n += _rm(p)
+            except OSError:
+                pass
+    removed['temp_files'] = n
+
+    if any(removed.values()):
+        print('[housekeeping%s] 清理: %s' % ('!低水位' if aggressive else '', removed), flush=True)
+    return removed
+
+
+def housekeeping_loop():
+    """每小时清一轮中间产物; C 盘低于 DISK_LOW_WATER_GB 则激进模式 (TTL 全压 1 天)."""
+    while True:
+        time.sleep(3600)
+        try:
+            free = _free_gb(os.path.expanduser('~'))
+            _housekeeping_once(aggressive=(free is not None and free < config.DISK_LOW_WATER_GB))
+        except Exception as e:
+            print('[housekeeping] err: %r' % e, flush=True)
+
+
 def restore_tasks():
     """启动时从 SQLite 恢复任务历史; 未完成 (queued/rendering) 的标记为中断."""
     saved = task_store.load_all()
@@ -403,6 +527,14 @@ def find_draft_dir(extract_dir):
 def health():
     return jsonify({'ok': True, 'service': 'render_service',
                     'videos_dir': VIDEOS, 'desktops': list(desktop_pool.keys())})
+
+
+@app.route('/internal/housekeep', methods=['POST'])
+def internal_housekeep():
+    """手动触发一轮中间产物清理 (运维/验证用). ?aggressive=1 走激进模式 (TTL 压到 1 天)."""
+    aggressive = request.args.get('aggressive') == '1'
+    return jsonify({'ok': True, 'aggressive': aggressive,
+                    'removed': _housekeeping_once(aggressive=aggressive)})
 
 
 @app.route('/render', methods=['POST'])
@@ -526,6 +658,7 @@ if __name__ == '__main__':
 
     # 过期任务清理
     threading.Thread(target=task_cleanup_loop, daemon=True).start()
+    threading.Thread(target=housekeeping_loop, daemon=True).start()  # 中间产物 TTL 清理
 
     # 心跳 (与 web 后端消息互通; WEB_BASE_URL 未配置时为 no-op)
     if WEB_BASE_URL:
