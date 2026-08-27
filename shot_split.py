@@ -210,9 +210,20 @@ def split_shots(video_path, force=False, sample_fps=5, min_scene_len_sec=0.6, mi
             # 超时按镜头时长缩放 (1080p libx264 重编码约 1-2x 实时, 长 77s 的镜头
             # 在忙 CPU 上 120s 不够, China 视频第 71 镜头超时杀死全局实锤), 下限 120s
             cut_timeout = max(120, int(shot.get('duration', 10) * 8))
+            # 编码器: 有 NVENC 用硬件 (比 libx264 快 5-10 倍, 75 个镜头的切片阶段
+            # 从十几分钟压到 1-2 分钟); 无卡回退 libx264
+            try:
+                from ffmpeg_renderer import _pick_video_codec
+                vcodec = _pick_video_codec()
+            except Exception:
+                vcodec = 'libx264'
+            if vcodec == 'libx264':
+                vargs = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20']
+            else:
+                vargs = ['-c:v', vcodec, '-preset', 'hq', '-rc', 'vbr', '-cq', '22', '-b:v', '0']
             subprocess.run(
                 ['ffmpeg', '-y', '-i', video_path, '-ss', str(shot['start']), '-to', str(shot['end']),
-                 '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k', clip_path],
+                 *vargs, '-c:a', 'aac', '-b:a', '128k', clip_path],
                 capture_output=True, timeout=cut_timeout
             )
         except subprocess.TimeoutExpired:
