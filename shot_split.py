@@ -159,17 +159,21 @@ def get_cached_shots(video_path):
         return json.load(f)
 
 
-def _cleanup_shots(base, shot_dir):
-    """重拆前清掉该素材上次切出的镜头片段(资产目录顶层) + 缩略图, 避免旧片段残留。"""
-    try:
-        for f in os.listdir(config.UPLOAD_DIR):
-            if f.startswith(base + '_shot') and f.endswith('.mp4'):
-                try:
-                    os.remove(os.path.join(config.UPLOAD_DIR, f))
-                except Exception:
-                    pass
-    except Exception:
-        pass
+def _cleanup_shots(base, shot_dir, video_path=None):
+    """重拆前清掉该素材上次切出的镜头片段 + 缩略图, 避免旧片段残留.
+    清两处: 源视频所在目录(新位置) + UPLOAD_DIR 根(历史位置, 兼容旧产物)."""
+    for root in {os.path.dirname(video_path) if video_path else None, config.UPLOAD_DIR}:
+        if not root:
+            continue
+        try:
+            for f in os.listdir(root):
+                if f.startswith(base + '_shot') and f.endswith('.mp4'):
+                    try:
+                        os.remove(os.path.join(root, f))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     if os.path.isdir(shot_dir):
         for f in os.listdir(shot_dir):
             try:
@@ -199,8 +203,9 @@ def split_shots(video_path, force=False, sample_fps=5, min_scene_len_sec=0.6, mi
     for shot in shots:
         idx = shot['index']
 
-        # 镜头视频直接落到资产目录顶层 -> 自动成为素材 (-ss/-to 放 -i 之后走精确解码, 保证边界准)
-        clip_path = os.path.join(config.UPLOAD_DIR, f'{base}_shot{idx:03d}.mp4')
+        # 镜头视频落到源视频所在目录 (= 该用户的素材目录, 多租户正确归属;
+        # 早期写 UPLOAD_DIR 根目录, 非 admin 用户的素材列表扫不到, 2026-08-27 实锤)
+        clip_path = os.path.join(os.path.dirname(video_path), f'{base}_shot{idx:03d}.mp4')
         subprocess.run(
             ['ffmpeg', '-y', '-i', video_path, '-ss', str(shot['start']), '-to', str(shot['end']),
              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k', clip_path],
