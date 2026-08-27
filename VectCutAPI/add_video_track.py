@@ -73,11 +73,10 @@ def add_video_track(
     :return: Updated draft information, including draft_id and draft_url
     """
     # Get or create draft
-    draft_id, script = get_or_create_draft(
-        draft_id=draft_id,
-        width=width,
-        height=height
-    )
+    # 磁盘自愈加载 (不再用 get_or_create_draft — 它在缓存 miss 时静默新建空草稿,
+    # 服务重启后编辑会落进新草稿, 原草稿纹丝不动 = "假成功"; 磁盘上也找不到时明确报错)
+    from edit_impl import _get_script
+    script = _get_script(draft_id)
     
     # 轨道策略: 指定 track_name 时只确保该命名轨道存在 (不再无条件先建默认轨道 ——
     # 否则首个 add_video 会多出一条空 'video' 轨, 用户实测加 1 个视频出现 2 条轨道).

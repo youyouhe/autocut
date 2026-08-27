@@ -37,11 +37,10 @@ def add_audio_track(
     :return: Updated draft information
     """
     # Get or create draft
-    draft_id, script = get_or_create_draft(
-        draft_id=draft_id,
-        width=width,
-        height=height
-    )
+    # 磁盘自愈加载 (不再用 get_or_create_draft — 它在缓存 miss 时静默新建空草稿,
+    # 服务重启后编辑会落进新草稿, 原草稿纹丝不动 = "假成功"; 磁盘上也找不到时明确报错)
+    from edit_impl import _get_script
+    script = _get_script(draft_id)
     
     # Add audio track (only when track doesn't exist)
     if track_name is not None:

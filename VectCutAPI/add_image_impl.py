@@ -82,11 +82,10 @@ def add_image_impl(
     :return: Updated draft information, including draft_id and draft_url
     """
     # Get or create draft
-    draft_id, script = get_or_create_draft(
-        draft_id=draft_id,
-        width=width,
-        height=height
-    )
+    # 磁盘自愈加载 (不再用 get_or_create_draft — 它在缓存 miss 时静默新建空草稿,
+    # 服务重启后编辑会落进新草稿, 原草稿纹丝不动 = "假成功"; 磁盘上也找不到时明确报错)
+    from edit_impl import _get_script
+    script = _get_script(draft_id)
     
     # 轨道策略 (与 add_video_track 一致): 指定 track_name 只确保命名轨道, 不建多余默认轨;
     # 未指定才保证默认轨道存在且不重复 add.
