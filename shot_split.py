@@ -222,7 +222,10 @@ def split_shots(video_path, force=False, sample_fps=5, min_scene_len_sec=0.6, mi
             else:
                 vargs = ['-c:v', vcodec, '-preset', 'hq', '-rc', 'vbr', '-cq', '22', '-b:v', '0']
             subprocess.run(
-                ['ffmpeg', '-y', '-i', video_path, '-ss', str(shot['start']), '-to', str(shot['end']),
+                # -ss 放 -i 前: 输入级快速 seek(关键帧+丢弃多余帧, 现代ffmpeg同样精确),
+                # 否则放 -i 后每切一片都从 0s 解码到目标点 — 75 镜头总解码量=整片×37遍,
+                # NVENC 也救不了 (China 视频切片 32s/片实锤); -to 相对输入seek后仍正确
+                ['ffmpeg', '-y', '-ss', str(shot['start']), '-i', video_path, '-to', str(shot['end'] - shot['start']),
                  *vargs, '-c:a', 'aac', '-b:a', '128k', clip_path],
                 capture_output=True, timeout=cut_timeout
             )
