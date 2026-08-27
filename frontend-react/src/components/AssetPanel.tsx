@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, Play, Info, FileVideo, Image as ImageIcon, Music, RefreshCw, Headset, VolumeOff, VolumeX, Loader2, Trash2, Captions, FileText, Scissors, Star, Plus, Search } from 'lucide-react';
+import { Upload, Play, Info, FileVideo, Image as ImageIcon, Music, RefreshCw, Headset, VolumeOff, VolumeX, Loader2, Trash2, Captions, FileText, Scissors, Star, Plus, Search, CheckSquare, SquareCheck, Check } from 'lucide-react';
 import * as api from '../api';
 import type { Asset, AssetType, Shot, MainVideo } from '../api';
 import AssetDetailPopup from './AssetDetailPopup';
@@ -63,6 +63,9 @@ export default function AssetPanel({ assets, setAssets, refreshAssets, draftId }
   const [mainVideoPortrait, setMainVideoPortrait] = useState(false);
   const [settingMain, setSettingMain] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [selectMode, setSelectMode] = useState(false);
+  const [checked, setChecked] = useState<Set<string>>(new Set());  // asset.path 集合
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [typeFilter, setTypeFilter] = useState<'all' | AssetType>('all');
   const [adding, setAdding] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -217,6 +220,46 @@ export default function AssetPanel({ assets, setAssets, refreshAssets, draftId }
     } finally { setDeleting(null); }
   };
 
+  // ===== 多选批量操作 =====
+  const toggleChecked = (asset: Asset) => {
+    setChecked(prev => {
+      const n = new Set(prev);
+      if (n.has(asset.path)) n.delete(asset.path); else n.add(asset.path);
+      return n;
+    });
+  };
+
+  const checkAllFiltered = () => {
+    // 全选 = 选中当前搜索/类型筛选后的可见集合 (再点一次全不选)
+    const allChecked = filtered.length > 0 && filtered.every(a => checked.has(a.path));
+    if (allChecked) {
+      setChecked(prev => { const n = new Set(prev); filtered.forEach(a => n.delete(a.path)); return n; });
+    } else {
+      setChecked(prev => { const n = new Set(prev); filtered.forEach(a => n.add(a.path)); return n; });
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    const targets = assets.filter(a => checked.has(a.path));
+    if (targets.length === 0) return;
+    const totalMB = (targets.reduce((s, a) => s + (a.size || 0), 0) / 1048576).toFixed(0);
+    if (!confirm(`删除选中的 ${targets.length} 个素材 (共 ${totalMB}MB)? 不可恢复.`)) return;
+    setBulkDeleting(true);
+    let ok = 0, fail = 0;
+    for (const a of targets) {
+      try {
+        await api.deleteAsset(a.name);
+        setAssets(prev => prev.filter(x => x.path !== a.path));
+        if (selected === a.name) closePopup();
+        ok++;
+      } catch { fail++; }
+    }
+    setBulkDeleting(false);
+    setChecked(new Set());
+    setSelectMode(false);
+    showToast(`批量删除完成: 成功 ${ok}${fail ? `, 失败 ${fail}` : ''}`, fail ? 'error' : 'success');
+  };
+
   const handleStripAudio = async (asset: Asset) => {
     if (!confirm(`去除 "${asset.name}" 的音轨? 不可恢复。去除后该素材没有声音，分析时只用画面(VLM)匹配，不再走 ASR。`)) return;
     setStrippingAudio(asset.name);
@@ -311,6 +354,7 @@ export default function AssetPanel({ assets, setAssets, refreshAssets, draftId }
           onChange={e => setTypeFilter(e.target.value as 'all' | AssetType)}
           className="border border-[#121212]/20 focus:border-[#121212] outline-none px-3 py-2 bg-white text-[#121212] text-[10px] uppercase tracking-widest font-bold transition-colors cursor-pointer"
         >
+
           <option value="all">All</option>
           <option value="video">Video</option>
           <option value="image">Image</option>
@@ -318,6 +362,30 @@ export default function AssetPanel({ assets, setAssets, refreshAssets, draftId }
           <option value="subtitle">Subtitle</option>
           <option value="text">Text</option>
         </select>
+        {/* 多选模式切换 */}
+        <button
+          onClick={() => { setSelectMode(m => !m); setChecked(new Set()); }}
+          className={`flex items-center gap-1.5 px-3 py-2 border text-[10px] uppercase tracking-widest font-bold transition-colors ${selectMode ? 'border-[#121212] bg-[#121212] text-[#FDFCF8]' : 'border-[#121212]/20 text-[#121212] hover:bg-[#121212]/5'}`}
+          title="批量选择素材 (全选/批量删除)">
+          <CheckSquare size={13} strokeWidth={2} /> {selectMode ? '退出选择' : '选择'}
+        </button>
+        {selectMode && (
+          <>
+            <button
+              onClick={checkAllFiltered}
+              className="flex items-center gap-1.5 px-3 py-2 border border-[#121212]/20 text-[#121212] hover:bg-[#121212]/5 transition-colors text-[10px] uppercase tracking-widest font-bold"
+              title="全选/取消全选当前筛选结果">
+              <SquareCheck size={13} strokeWidth={2} /> 全选
+            </button>
+            <button
+              onClick={handleBulkDelete}
+              disabled={checked.size === 0 || bulkDeleting}
+              className="flex items-center gap-1.5 px-3 py-2 border border-red-700/40 text-red-700 hover:bg-red-50 transition-colors disabled:opacity-40 text-[10px] uppercase tracking-widest font-bold">
+              {bulkDeleting ? <Loader2 size={13} strokeWidth={2} className="animate-spin" /> : <Trash2 size={13} strokeWidth={2} />}
+              删除{checked.size > 0 ? ` (${checked.size})` : ''}
+            </button>
+          </>
+        )}
       </div>
 
       {/* 主视频 (最新录制的那条, 跟长期存在的素材库分开管理) */}
@@ -374,6 +442,9 @@ export default function AssetPanel({ assets, setAssets, refreshAssets, draftId }
               key={asset.path}
               asset={asset}
               selected={selected === asset.name}
+              selectMode={selectMode}
+              checked={checked.has(asset.path)}
+              onToggleCheck={() => toggleChecked(asset)}
               soundOn={soundOn}
               mainVideoName={mainVideo?.name}
               analyzing={analyzing === asset.name}
@@ -427,6 +498,9 @@ export default function AssetPanel({ assets, setAssets, refreshAssets, draftId }
 interface CardProps {
   asset: Asset;
   selected: boolean;
+  selectMode: boolean;         // 多选批量模式: 卡片点击切换选中而不是打开详情
+  checked: boolean;
+  onToggleCheck: () => void;
   soundOn: boolean;
   mainVideoName?: string;
   analyzing: boolean;
@@ -451,7 +525,7 @@ interface CardProps {
 }
 
 function AssetCard({
-  asset, selected, soundOn, mainVideoName,
+  asset, selected, selectMode, checked, onToggleCheck, soundOn, mainVideoName,
   analyzing, splitting, deleting, strippingAudio, settingMain, adding, hasShots, draftId,
   onHover, onLeave, onMeta,
   onAnalyze, onReanalyze, onToggleDetails, onAddToDraft, onSetMain, onStripAudio, onSplitShots, onDelete,
@@ -461,7 +535,14 @@ function AssetCard({
   const ANALYZABLE: AssetType[] = ['video', 'image'];
 
   return (
-    <div ref={ref} className={`border overflow-hidden group flex flex-col transition-colors ${selected ? 'border-[#121212]' : 'border-[#121212]/10 hover:border-[#121212]/30'}`}>
+    <div ref={ref} onClick={selectMode ? onToggleCheck : undefined}
+      className={`border overflow-hidden group flex flex-col transition-colors cursor-pointer
+        ${selectMode && checked ? 'border-[#121212] bg-[#121212]/5' : selected ? 'border-[#121212]' : 'border-[#121212]/10 hover:border-[#121212]/30'}`}>
+      {selectMode && (
+        <div className={`absolute top-2 right-2 z-20 w-6 h-6 flex items-center justify-center border-2 transition-colors ${checked ? 'bg-[#121212] border-[#121212] text-[#FDFCF8]' : 'bg-white/70 border-[#121212]/40'}`}>
+          {checked && <Check size={14} strokeWidth={3} />}
+        </div>
+      )}
       <div className={`${asset._portrait ? 'h-72' : 'h-48'} border-b border-[#121212]/10 flex items-center justify-center relative bg-[#121212]`}
         onMouseEnter={asset.type === 'video' ? (e) => { setHovering(true); onHover(e, asset.path); }
           : asset.type === 'image' ? () => setHovering(true) : undefined}
@@ -530,7 +611,7 @@ function AssetCard({
           <span>{asset.type}</span>
           <span>{formatSize(asset.size)}</span>
         </div>
-        <div className="flex gap-2 mt-auto">
+        <div className="flex gap-2 mt-auto" onClick={selectMode ? (e) => e.stopPropagation() : undefined}>
           {ANALYZABLE.includes(asset.type) && (
             <>
               <button onClick={onAnalyze} disabled={analyzing}
