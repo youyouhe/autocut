@@ -7,6 +7,7 @@ import requests
 from agents import Runner  # OpenAI Agents SDK (聊天 Agent 运行时)
 _CHAT_LOCKS = {}  # conversation_id -> Lock: 同一会话串行, 防并发整体覆盖丢轮次
 _CHAT_CANCELS = {}  # conversation_id -> threading.Event: 手动停止进行中的一轮
+_SPLIT_JOBS = {}    # video_path -> {running/done/error/shots}: 分镜后台任务状态
 _CHAT_LOCK_TIMES = {}  # conversation_id -> 锁获取时间: 卡死检测 (10min 强制接管)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1800,14 +1801,19 @@ def api_asset_get_shots(name):
         return jsonify({'error': 'not found'}), 404
     import shot_split
     shots = shot_split.get_cached_shots(path)
-    return jsonify({'shots': _shots_response(shots) if shots else None})
+    job = _SPLIT_JOBS.get(path) or {}
+    return jsonify({'shots': _shots_response(shots) if shots else None,
+                    'split_running': bool(job.get('running')),
+                    'split_error': job.get('error')})
 
 
 @app.route('/api/assets/<name>/split-shots', methods=['POST'])
 @login_required
 def api_asset_split_shots(name):
     """分镜拆分: GPU CNN 特征检测镜头边界, 按边界切出每个镜头的独立小视频 + 关键帧。
-    结果缓存, 大视频/长视频耗时可能到几十秒(推理+每个镜头重新编码), 非 force 命中缓存立即返回。"""
+    异步执行: 立即返回 started, 后台线程跑 (CPU 推理大视频要 10-15 分钟, 同步堵
+    HTTP 请求会被前端超时掐死 → 静默失败, 2026-08-27 China 视频 8 分钟实锤).
+    完成后片段自动落到资产目录; 状态查 GET /api/assets/<name>/shots (含 running)."""
     if not config.safe_folder_name(name):
         return jsonify({'ok': False, 'error': 'invalid name'}), 400
     uid = current_user_id()
@@ -1819,16 +1825,41 @@ def api_asset_split_shots(name):
         return jsonify({'ok': False, 'error': '只能对视频文件做分镜拆分'}), 400
 
     data = request.json or {}
+    force = bool(data.get('force', False))
     import shot_split
-    try:
-        shots = shot_split.split_shots(
-            path,
-            force=bool(data.get('force', False)),
-            sample_fps=int(data.get('sample_fps', 5)),
-            min_scene_len_sec=float(data.get('min_scene_len_sec', 0.6)),
-        )
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+
+    # 命中缓存(非 force)立即返回 — 同步路径保留
+    if not force:
+        cached = shot_split.get_cached_shots(path)
+        if cached:
+            return jsonify({'ok': True, 'shots': cached, 'cached': True})
+
+    # 已在跑: 直接返回进行中
+    st = _SPLIT_JOBS.get(path)
+    if st and st.get('running'):
+        return jsonify({'ok': True, 'started': True, 'status': 'running',
+                        'note': '该视频正在后台拆分中, 完成后片段自动出现在素材列表'})
+
+    # 启动后台拆分
+    _SPLIT_JOBS[path] = {'running': True, 'started_at': time.time(), 'error': None}
+
+    def _bg():
+        try:
+            shots = shot_split.split_shots(
+                path, force=force,
+                sample_fps=int(data.get('sample_fps', 5)),
+                min_scene_len_sec=float(data.get('min_scene_len_sec', 0.6)),
+            )
+            _SPLIT_JOBS[path] = {'running': False, 'done': True,
+                                 'shots': len(shots), 'finished_at': time.time()}
+            print('[shots] 后台拆分完成: %s (%d 镜头)' % (name, len(shots)), flush=True)
+        except Exception as e:
+            _SPLIT_JOBS[path] = {'running': False, 'error': str(e)[:300]}
+            print('[shots] 后台拆分失败: %s: %s' % (name, e), flush=True)
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return jsonify({'ok': True, 'started': True, 'status': 'running',
+                    'note': '大视频拆分约 5-15 分钟(视 CPU/GPU), 完成后片段自动出现在素材列表; 期间可做别的'})
     return jsonify({'ok': True, 'name': name, 'shots': _shots_response(shots)})
 
 

@@ -136,6 +136,25 @@ export default function AssetPanel({ assets, setAssets, refreshAssets, draftId }
         // 切出来的镜头视频已作为素材落到资产目录, 刷新列表让它自动出现在资产里
         await refreshAssets();
         showToast(`拆出 ${r.shots.length} 个镜头`, 'success');
+      } else if (r.ok && (r as any).started) {
+        // 异步拆分: 大视频 CPU 推理要 5-15 分钟, 立即返回; 完成后自动刷新
+        showToast(`已开始后台拆分 (约 5-15 分钟), 完成后镜头自动出现在素材列表`, 'success');
+        const name = asset.name;
+        const poll = setInterval(async () => {
+          try {
+            const s = await api.getShots(name);
+            if (s.shots) {
+              clearInterval(poll);
+              setShotsMap(prev => ({ ...prev, [name]: s.shots! }));
+              await refreshAssets();
+              showToast(`拆出 ${s.shots.length} 个镜头`, 'success');
+            } else if (s.split_error) {
+              clearInterval(poll);
+              showToast(`分镜拆分失败: ${s.split_error}`, 'error');
+            }
+          } catch { /* 轮询失败继续等 */ }
+        }, 20000);
+        setTimeout(() => clearInterval(poll), 30 * 60 * 1000); // 最多轮询30分钟
       } else {
         showToast(`分镜拆分失败: ${r.error || '未知错误'}`, 'error');
       }

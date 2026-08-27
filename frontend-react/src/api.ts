@@ -217,12 +217,12 @@ export interface Shot {
 }
 
 /** 只读分镜拆分缓存, 没拆过 shots 是 null */
-export function getShots(name: string): Promise<{ shots: Shot[] | null }> {
+export function getShots(name: string): Promise<{ shots: Shot[] | null; split_running?: boolean; split_error?: string | null }> {
   return jsonFetch(`/api/assets/${encodeURIComponent(name)}/shots`);
 }
 
 /** 分镜拆分: GPU CNN 特征检测镜头边界, 按边界切出每个镜头的独立小视频+关键帧 */
-export function splitShots(name: string, opts?: { force?: boolean; sample_fps?: number; min_scene_len_sec?: number }): Promise<{ ok: boolean; error?: string; shots?: Shot[] }> {
+export function splitShots(name: string, opts?: { force?: boolean; sample_fps?: number; min_scene_len_sec?: number }): Promise<{ ok: boolean; error?: string; shots?: Shot[]; started?: boolean; status?: string; note?: string }> {
   return jsonFetch(`/api/assets/${encodeURIComponent(name)}/split-shots`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
