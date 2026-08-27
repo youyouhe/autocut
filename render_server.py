@@ -8,6 +8,7 @@ from agents import Runner  # OpenAI Agents SDK (聊天 Agent 运行时)
 _CHAT_LOCKS = {}  # conversation_id -> Lock: 同一会话串行, 防并发整体覆盖丢轮次
 _CHAT_CANCELS = {}  # conversation_id -> threading.Event: 手动停止进行中的一轮
 _SPLIT_JOBS = {}    # video_path -> {running/done/error/shots}: 分镜后台任务状态
+_RENDER_LAST_SYNC_SAVE = {}  # draft_id -> 上次渲染前 sync save 时间 (配合 DRAFT_DIRTY 防重复重建)
 _CHAT_LOCK_TIMES = {}  # conversation_id -> 锁获取时间: 卡死检测 (10min 强制接管)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -807,12 +808,18 @@ def render_by_draft_id(draft_id):
     if not _draft_owned(draft_id, current_user_id()):
         return jsonify({'error': 'draft folder not found: %s' % draft_id}), 404
 
-    # 渲染前先把内存缓存里的最新编辑落盘: 页面加素材只更新 DRAFT_CACHE, 不 save 的话
-    # 磁盘 draft_content.json 还是空壳 → 渲染器渲染空草稿 → 剪映空时间线拒导出
-    # (2026-08-24 实锤: 用户页面建草稿+加视频, 直接点 Render 两次全失败, 磁盘 0 轨道).
+    # 渲染前把内存缓存的最新编辑落盘 (无脏编辑则跳过 — sync save 会重建整个草稿目录
+    # 重拷全部素材, agent 已 save 过再 render 时纯属重复, 大草稿 IO 拖爆实锤).
+    # 页面加素材只更新 DRAFT_CACHE 不落盘的坑见 2026-08-24 案例, 脏标记保证不漏.
     try:
         _warmup_draft(draft_id)   # 冷草稿也先载入 (幂等)
-        _post_internal('save_draft', {'draft_id': draft_id, 'sync': True}, user_id=current_user_id())
+        from edit_impl import DRAFT_DIRTY
+        # 有脏标记才 save (编辑打标, save 后清除); 无标记 = 磁盘已是最新, 跳过整目录重建
+        if DRAFT_DIRTY.pop(draft_id, None) is not None:
+            _post_internal('save_draft', {'draft_id': draft_id, 'sync': True}, user_id=current_user_id())
+            _RENDER_LAST_SYNC_SAVE[draft_id] = time.time()
+        else:
+            print('[render] 草稿无未保存编辑, 跳过预保存 (省一次整目录重建)', flush=True)
     except Exception as e:
         print('[render] 预保存草稿失败(继续): %s' % e, flush=True)
 

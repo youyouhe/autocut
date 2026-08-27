@@ -32,7 +32,33 @@ from create_draft import create_draft
 from delete_impl import query_draft_impl, delete_segment_impl, delete_track_impl, delete_empty_tracks_impl
 from edit_impl import (update_segment_impl, replace_material_impl, update_text_impl,
                        add_fade_impl, add_filter_impl, add_transition_impl, add_animation_impl,
-                       split_segment_impl, duplicate_segment_impl, move_segment_impl, reorder_track_impl)
+                       split_segment_impl, duplicate_segment_impl, move_segment_impl, reorder_track_impl,
+                       DRAFT_DIRTY)
+
+# 修改类路由: 成功后打脏标记 (渲染前置 save 据此判断是否需要重新落盘 —
+# 没有编辑就跳过整目录重建, 避免大草稿重复拷贝全部素材拖爆 IO)
+_MUTATING_PATHS = {
+    '/add_video', '/add_audio', '/add_subtitle', '/add_text', '/add_image',
+    '/add_video_keyframe', '/add_effect', '/add_sticker',
+    '/update_segment', '/replace_material', '/update_text', '/add_fade',
+    '/add_filter', '/add_transition_to_segment', '/add_animation_to_segment',
+    '/split_segment', '/duplicate_segment', '/move_segment', '/reorder_track',
+    '/delete_segment', '/delete_track', '/delete_empty_tracks',
+}
+
+
+@app.after_request
+def _mark_draft_dirty(response):
+    try:
+        if request.method == 'POST' and request.path in _MUTATING_PATHS and response.status_code == 200:
+            body = request.get_json(silent=True) or {}
+            did = body.get('draft_id')
+            if did:
+                import time as _t
+                DRAFT_DIRTY[did] = _t.time()
+    except Exception:
+        pass
+    return response
 from util import generate_draft_url as utilgenerate_draft_url, hex_to_rgb
 from pyJianYingDraft.text_segment import TextStyleRange, Text_style, Text_border
 

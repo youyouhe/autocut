@@ -23,6 +23,10 @@ SEC = 1_000_000  # 一秒 = 1e6 微秒
 _DRAFT_LOCKS: Dict[str, threading.RLock] = {}
 _DRAFT_LOCKS_GUARD = threading.Lock()
 
+# 草稿脏标记: draft_id -> 最后一次编辑时间. 渲染前置 save 据此跳过无谓的整目录重建
+# (agent 已 save 过 + 无新编辑时, 重拷全部素材纯属浪费, 大草稿 IO 拖爆实锤)
+DRAFT_DIRTY: Dict[str, float] = {}
+
 
 def draft_lock(draft_id: str) -> threading.RLock:
     """取某草稿的编辑锁 (RLock). 用法: `with draft_lock(did): ...`"""
