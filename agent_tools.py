@@ -90,11 +90,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_transcript",
-            "description": "获取视频的语音转录文案（含时间戳）。用户问'口播文案/字幕/语音内容'时调用。",
+            "description": "获取视频的语音转录文案（含时间戳）。用户问'口播文案/字幕/语音内容'时调用。长视频(转录超6000字)必须用 start/end 分页取: 每次取120秒左右的时间窗, 返回该窗的SRT文本+next_range_start, 按窗顺次处理直到 done=true; 全量拉取会被输出压缩截断。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "资源文件名"}
+                    "name": {"type": "string", "description": "资源文件名"},
+                    "start": {"type": "number", "description": "分页: 时间窗起点(秒)。与 end 配合"},
+                    "end": {"type": "number", "description": "分页: 时间窗终点(秒)。建议窗口≤120秒"}
                 },
                 "required": ["name"]
             }
@@ -873,12 +875,50 @@ def execute_tool(name, args, ctx):
         if not analysis:
             return json.dumps({'error': f'{fname} 尚未分析，请调用 analyze_resource 先分析'}, ensure_ascii=False)
         audio = analysis.get('audio', {})
-        if isinstance(audio, dict):
+        segs = audio.get('segments', []) if isinstance(audio, dict) else []
+        t0, t1 = args.get('start'), args.get('end')
+        if t0 is not None or t1 is not None:
+            # 分页模式: 按时间范围 [start, end) 秒过滤 segments, 返回该段的 SRT 文本
+            # (SRT 比 JSON segments 紧凑 ~3 倍, 不会被输出压缩截断 — 长视频翻译/全量
+            # 字幕处理的标准工作法: 逐段取→逐段处理→拼回完整 SRT)
+            lo = float(t0 or 0)
+            hi = float(t1) if t1 is not None else float('inf')
+            picked = [s for s in segs if lo <= float(s.get('start', 0)) < hi]
+            if not picked:
+                # 范围内无段: 提示最近的段时间, 方便 agent 校正范围
+                nearest = min(segs, key=lambda s: abs(float(s.get('start', 0)) - lo)) if segs else None
+                result = {'error': f'[{lo}-{hi if hi != float("inf") else "end"}]s 范围内没有语音段',
+                          'total_segments': len(segs),
+                          'nearest_seg_start': nearest.get('start') if nearest else None}
+            else:
+                def _ts(sec):
+                    h = int(sec // 3600); m = int((sec % 3600) // 60); s = sec % 60
+                    return f'{h:02d}:{m:02d}:{s:06.3f}'.replace('.', ',')
+                srt_lines = []
+                for i, s in enumerate(picked):
+                    srt_lines.append(str(i + 1))
+                    srt_lines.append(f"{_ts(float(s.get('start', 0)))} --> {_ts(float(s.get('end', 0)))}")
+                    srt_lines.append(str(s.get('text', '')).strip())
+                    srt_lines.append('')
+                last_start = float(picked[-1].get('start', 0))
+                nxt = next((float(s.get('start', 0)) for s in segs if float(s.get('start', 0)) >= hi), None)
+                result = {
+                    'ok': True,
+                    'range_s': [lo, None if hi == float('inf') else hi],
+                    'segments_in_range': len(picked),
+                    'total_segments': len(segs),
+                    'srt': '\n'.join(srt_lines),
+                    'range_full_text': ' '.join(str(s.get('text', '')).strip() for s in picked),
+                    'next_range_start': nxt,
+                    'done': nxt is None,
+                }
+        elif isinstance(audio, dict):
             result = {
                 'full_text': audio.get('full_text', '(无语音)'),
                 'segments': audio.get('segments', []),
                 # srt 全文: 喂给 add_subtitle 用 (时间轴来自语音识别, 天然同步)
-                'srt': analysis.get('srt', '')
+                'srt': analysis.get('srt', ''),
+                'total_segments': len(segs),
             }
         else:
             result = {'full_text': '(无语音)', 'segments': [], 'srt': ''}
