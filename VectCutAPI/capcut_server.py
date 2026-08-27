@@ -47,8 +47,17 @@ _MUTATING_PATHS = {
 }
 
 
+from util import generate_draft_url as utilgenerate_draft_url, hex_to_rgb
+from pyJianYingDraft.text_segment import TextStyleRange, Text_style, Text_border
+
+from settings.local import IS_CAPCUT_ENV, DRAFT_DOMAIN, PREVIEW_ROUTER, PORT
+
+app = Flask(__name__)
+
+
 @app.after_request
 def _mark_draft_dirty(response):
+    """编辑路由成功后打脏标记 (渲染前置 save 据此跳过无谓的整目录重建)."""
     try:
         if request.method == 'POST' and request.path in _MUTATING_PATHS and response.status_code == 200:
             body = request.get_json(silent=True) or {}
@@ -59,12 +68,6 @@ def _mark_draft_dirty(response):
     except Exception:
         pass
     return response
-from util import generate_draft_url as utilgenerate_draft_url, hex_to_rgb
-from pyJianYingDraft.text_segment import TextStyleRange, Text_style, Text_border
-
-from settings.local import IS_CAPCUT_ENV, DRAFT_DOMAIN, PREVIEW_ROUTER, PORT
-
-app = Flask(__name__)
  
 @app.route('/add_video', methods=['POST'])
 def add_video():
