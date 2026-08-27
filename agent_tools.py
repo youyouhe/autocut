@@ -8,6 +8,7 @@
 import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
@@ -735,6 +736,21 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_script",
+            "description": "执行一段 Python 脚本（管理员专属）。批量数据处理/确定性计算必须用它而不是自己在对话里手工搬: 双语字幕对齐(中英 zip 合并)、SRT 整体偏移修正、批量文本替换、JSON 校验、把长列表按格式拼装等 —— LLM 手工逐条处理上百条内容必然出错(字幕错位实锤), 脚本一次做对。工作目录是沙箱 scratch 目录; 脚本里可用绝对路径读素材/写产物, print 输出会返回。耗时操作给 timeout(最长120秒)。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python 3 脚本全文。print() 输出前4000字会返回"},
+                    "timeout": {"type": "number", "description": "超时秒数, 默认30, 最大120"}
+                },
+                "required": ["code"]
+            }
+        }
+    },
 ]
 
 def _find_analysis(path, uid):
@@ -1423,6 +1439,44 @@ def execute_tool(name, args, ctx):
             result = {'ok': True, 'draft_id': draft_id}
         else:
             result = {'error': str(r)}
+
+    elif name == 'run_script':
+        # 管理员专属 + env 总开关 (AGENT_SCRIPT_TOOL=0 关闭).
+        # 安全边界: 多租户下任意代码执行 = 服务账号权限, 不能开放给普通用户.
+        if os.environ.get('AGENT_SCRIPT_TOOL', '1') == '0':
+            result = {'error': '脚本工具已被管理员禁用 (AGENT_SCRIPT_TOOL=0)'}
+        elif not (getattr(rs.user_store, 'get', None) and
+                  (rs.user_store.get(ctx.uid) or {}).get('is_admin')):
+            result = {'error': 'run_script 仅管理员可用'}
+        else:
+            code = args.get('code', '')
+            timeout = min(float(args.get('timeout') or 30), 120)
+            if not code.strip():
+                result = {'error': 'code 不能为空'}
+            else:
+                import subprocess as _sp, tempfile as _tf, time as _time
+                scratch = os.path.join(rs.config.CACHE_DIR, 'agent_scripts')
+                os.makedirs(scratch, exist_ok=True)
+                fd, sp_path = _tf.mkstemp(suffix='.py', dir=scratch)
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    f.write(code)
+                t0 = _time.time()
+                try:
+                    pr = _sp.run([sys.executable, '-I', sp_path],
+                                 capture_output=True, text=True, timeout=timeout,
+                                 cwd=scratch, errors='replace')
+                    result = {
+                        'ok': pr.returncode == 0,
+                        'exit_code': pr.returncode,
+                        'stdout': (pr.stdout or '')[-4000:],
+                        'stderr': (pr.stderr or '')[-1500:],
+                        'elapsed_s': round(_time.time() - t0, 2),
+                        'script_path': sp_path,
+                    }
+                except _sp.TimeoutExpired:
+                    result = {'ok': False, 'error': f'脚本超时 (> {timeout}s), 已终止'}
+                except Exception as e:
+                    result = {'ok': False, 'error': f'执行失败: {e}'}
 
     else:
         # 模型偶尔会吐出空/未知的 tool_call name (观察到 qwen 多轮工具调用时出现过).
