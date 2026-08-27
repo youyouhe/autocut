@@ -1611,7 +1611,11 @@ _ASSET_TYPE_BY_EXT = {
 }
 
 
-def _classify_asset(name, path):
+_HAS_AUDIO_CACHE = {}  # path -> (mtime, has_audio): 音轨探测缓存 (ffprobe ~90ms/个,
+                       # 76 个视频同步跑 6.7s 把素材列表拖死; 缓存命中 0ms, mtime 变了才重探)
+
+
+def _classify_asset(name, path, probe_audio=True):
     ext = os.path.splitext(name)[1].lower()
     ftype = _ASSET_TYPE_BY_EXT.get(ext, 'other')
     asset = {'name': name, 'path': path, 'type': ftype, 'file': path}
@@ -1622,11 +1626,14 @@ def _classify_asset(name, path):
     except Exception:
         pass
     if ftype == 'video':
-        # 探测音轨是否存在, 供前端展示"已去除音轨"状态 (成功去音后这里会变 False)
-        try:
-            from perceive import has_audio_stream
-            asset['has_audio'] = has_audio_stream(path)
-        except Exception:
+        # 音轨状态: 缓存命中直接用; 未命中挂起待并行探测 (由调用方批量补)
+        cached = _HAS_AUDIO_CACHE.get(path)
+        if cached and cached[0] == asset.get('modified_at'):
+            asset['has_audio'] = cached[1]
+        elif probe_audio:
+            asset['_needs_audio_probe'] = True
+            asset['has_audio'] = None
+        else:
             asset['has_audio'] = None
     return asset
 
@@ -1648,12 +1655,29 @@ def api_assets_scan():
         names = [n for n in os.listdir(user_upload_dir)
                  if not n.startswith('.') and os.path.isfile(os.path.join(user_upload_dir, n))]
         names.sort(key=lambda n: os.path.getmtime(os.path.join(user_upload_dir, n)), reverse=True)
+        pending = []   # 缓存未命中的视频: 循环后并行探测, 不在循环里同步跑 (拖死列表)
         for name in names:
             p = os.path.join(user_upload_dir, name)
             asset = _classify_asset(name, p)
             if asset['type'] == 'other':
                 continue
+            if asset.pop('_needs_audio_probe', False):
+                pending.append(asset)
             results.append(asset)
+        # 音轨探测并行化: 8 线程跑 ffprobe (76 个 ≈ 1s; 旧同步版 6.7s)
+        if pending:
+            from concurrent.futures import ThreadPoolExecutor
+            from perceive import has_audio_stream
+
+            def _probe(a):
+                try:
+                    return a, has_audio_stream(a['path'])
+                except Exception:
+                    return a, None
+            with ThreadPoolExecutor(max_workers=16) as ex:
+                for a, hv in ex.map(_probe, pending):
+                    a['has_audio'] = hv
+                    _HAS_AUDIO_CACHE[a['path']] = (a.get('modified_at'), hv)
     except Exception:
         pass
     return jsonify({'assets': results})
