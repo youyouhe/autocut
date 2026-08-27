@@ -42,6 +42,15 @@ except Exception as e:
     app = Flask(__name__)  # 独立模式 (仅渲染)
     FUSED_VC = False
     print('[fusion] VectCutAPI import 失败 (%s), 仅渲染模式' % repr(e)[:100])
+    # fail-fast: 编辑路由是产品核心, 半残启动 = 所有编辑操作 405/静默失败
+    # (2026-08-27 实锤: after_request 插在 app 定义前, 导入失败后服务"正常"跑了一小时,
+    #  agent 全部工具报 JSON 解析错). ALLOW_RENDER_ONLY=1 可显式保留降级启动.
+    if os.environ.get('ALLOW_RENDER_ONLY', '') != '1':
+        import traceback
+        traceback.print_exc()
+        print('\n[fatal] 拒绝启动: 编辑端点融合失败 (见上方堆栈). 修好再起; '
+              '确实只要渲染功能可 ALLOW_RENDER_ONLY=1 强制启动.\n', flush=True)
+        sys.exit(1)
 
 # === 路径 ===
 UPLOAD_DIR = config.UPLOAD_DIR
@@ -2635,6 +2644,17 @@ def perceive_result_api():
 # === 模块级初始化 (waitress 以 render_server:app 导入时 __name__ != '__main__',
 # 以下初始化必须在 import 时执行, 否则生产模式下任务恢复/看门狗/CORS 全部不生效 —
 # 2026-08-24 实锤: 每次重启内存任务全丢, render/status 全部 unknown task) ===
+
+# 启动自检: 关键路由必须全部在位 (融合"成功"但个别路由被覆盖/丢失时兜底,
+# 与上面 fusion fail-fast 互补)
+_REQUIRED_ROUTES = ('/add_video', '/add_subtitle', '/save_draft', '/query_script',
+                    '/update_segment', '/render/status/<task_id>', '/api/chat')
+_missing = [r for r in _REQUIRED_ROUTES
+            if not any(str(rule) == r for rule in app.url_map.iter_rules())]
+if _missing and os.environ.get('ALLOW_RENDER_ONLY', '') != '1':
+    print('[fatal] 拒绝启动: 关键路由缺失 %s' % _missing, flush=True)
+    sys.exit(1)
+
 print('render_server on http://%s:%d (render 转发至 %s)' % (
     config.RENDER_SERVER_HOST, config.RENDER_SERVER_PORT,
     config.RENDER_SERVICE_URL), flush=True)
