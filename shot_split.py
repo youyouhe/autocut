@@ -206,11 +206,18 @@ def split_shots(video_path, force=False, sample_fps=5, min_scene_len_sec=0.6, mi
         # 镜头视频落到源视频所在目录 (= 该用户的素材目录, 多租户正确归属;
         # 早期写 UPLOAD_DIR 根目录, 非 admin 用户的素材列表扫不到, 2026-08-27 实锤)
         clip_path = os.path.join(os.path.dirname(video_path), f'{base}_shot{idx:03d}.mp4')
-        subprocess.run(
-            ['ffmpeg', '-y', '-i', video_path, '-ss', str(shot['start']), '-to', str(shot['end']),
-             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k', clip_path],
-            capture_output=True, timeout=120
-        )
+        try:
+            # 超时按镜头时长缩放 (1080p libx264 重编码约 1-2x 实时, 长 77s 的镜头
+            # 在忙 CPU 上 120s 不够, China 视频第 71 镜头超时杀死全局实锤), 下限 120s
+            cut_timeout = max(120, int(shot.get('duration', 10) * 8))
+            subprocess.run(
+                ['ffmpeg', '-y', '-i', video_path, '-ss', str(shot['start']), '-to', str(shot['end']),
+                 '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '128k', clip_path],
+                capture_output=True, timeout=cut_timeout
+            )
+        except subprocess.TimeoutExpired:
+            # 单个镜头切超时: 标记无片段继续下一个, 不杀整个任务
+            print('[shots] 镜头 %d 切片超时(%ss), 跳过' % (idx, cut_timeout), flush=True)
         shot['clip_path'] = clip_path if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0 else None
 
         # 关键帧只是给人看的缩略图, 放在 _shots/<base>/ 下, 不进资产列表
