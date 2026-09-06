@@ -36,13 +36,15 @@ class ApiClient:
     def _url(self, endpoint):
         return f"{self.base_url}/{endpoint.lstrip('/')}"
 
-    def post(self, endpoint, json=None, files=None, data=None, timeout=None):
+    def post(self, endpoint, json=None, files=None, data=None, timeout=None, headers=None):
         r = self.session.post(self._url(endpoint), json=json, files=files,
-                              data=data, timeout=timeout or self.post_timeout)
+                              data=data, timeout=timeout or self.post_timeout,
+                              headers=headers)
         return self._parse(r)
 
-    def get(self, endpoint, timeout=None):
-        r = self.session.get(self._url(endpoint), timeout=timeout or self.get_timeout)
+    def get(self, endpoint, timeout=None, headers=None):
+        r = self.session.get(self._url(endpoint), timeout=timeout or self.get_timeout,
+                             headers=headers)
         return self._parse(r)
 
     def _parse(self, r):

@@ -708,7 +708,8 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）。不传=用当前激活草稿。"}
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）。不传=用当前激活草稿。"},
+                    "brief": {"type": "boolean", "description": "轻量复核模式: 只回各轨条数/起止范围/总时长, 不回逐段明细 —— 输出极小永不截断。写后核对'条数/句数/总时长对不对'先用 brief=true; 需要看具体某段(segment_id/文件名/字幕文本)再用全量模式。"}
                 }
             }
         }
@@ -762,6 +763,181 @@ def _find_analysis(path, uid):
     alt = path.replace('/', '\\') if '/' in path else path.replace('\\', '/')
     return ms.get_analysis(alt, owner=uid)
 
+
+# ============================================================ 写后复核 (机制化 instructions 2b 铁律)
+# 背景: 剪映系草稿写入存在静默失效 —— 工具报"成功"但时间线上没有那轨/那段 (实测过
+# add_subtitle 报成功、字幕轨没落进草稿、渲染出无字幕成片)。原来靠 system prompt 纪律
+# 让模型每次写后手动 get_draft_timeline 复核, 模型偶尔不做。现在在工具层机制化:
+# 写类工具派发前抓 before 快照、派发后抓 after 快照, diff 出 verified 字段直接给模型。
+
+# 参与写后复核的工具 (错误路径在复核前已提前 return, 天然跳过)
+_WRITE_VERIFY_TOOLS = {
+    'add_video', 'add_subtitle', 'add_text', 'add_audio', 'add_image',
+    'delete_segment', 'delete_track', 'delete_empty_tracks',
+    'split_segment', 'duplicate_segment', 'move_segment',
+    'update_segment', 'replace_material', 'update_text',
+    'add_fade', 'add_filter', 'add_transition_to_segment', 'add_animation_to_segment',
+    'reorder_track',
+}
+
+# 各 add_* 工具的默认轨道名 (与 execute_tool 分支里的默认一致)
+_ADD_DEFAULT_TRACK = {'add_video': 'video_main', 'add_text': 'text_main', 'add_image': 'image_main'}
+
+_SRT_TIME_RE = None  # 惰性编译
+
+
+def _srt_cue_count(srt):
+    """数 SRT 里的 cue 条数 (按时间行计)."""
+    global _SRT_TIME_RE
+    if _SRT_TIME_RE is None:
+        import re as _re
+        _SRT_TIME_RE = _re.compile(r'\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->')
+    return len(_SRT_TIME_RE.findall(srt or ''))
+
+
+def _tl_snapshot(did, uid):
+    """拉草稿原始 draft_content → 轻量结构快照 (写后复核专用, 不走 get_draft_timeline
+    的展示加工). 失败返回 None (复核标记 skipped)."""
+    import render_server as rs
+    r = rs._get_internal(f'api/draft/timeline/{did}', user_id=uid)
+    if not isinstance(r, dict) or not r.get('success'):
+        return None
+    try:
+        content = json.loads(r['output'])
+    except (ValueError, TypeError):
+        return None
+    # material_id → 素材来源文件名 (replace_material 核对备用)
+    mats = {}
+    mats_lists = (content.get('materials') or {})
+    for m in (mats_lists.get('videos') or []) + (mats_lists.get('audios') or []):
+        if m.get('id'):
+            src = m.get('remote_url') or m.get('path') or m.get('media_path') or ''
+            mats[m['id']] = os.path.basename(src) if src else ''
+    tracks = []
+    for t in (content.get('tracks') or []):
+        tracks.append({
+            'id': t.get('id'), 'name': t.get('name'), 'type': t.get('type'),
+            'segs': [{'id': s.get('id'), 'src': mats.get(s.get('material_id'), '')}
+                     for s in (t.get('segments') or [])],
+        })
+    return {
+        'tracks': tracks,
+        'total': sum(len(t['segs']) for t in tracks),
+        'segment_ids': [s['id'] for t in tracks for s in t['segs']],
+        'duration_s': round((content.get('duration') or 0) / 1_000_000, 3),
+    }
+
+
+def _verify_write(name, args, before, after):
+    """写后复核判定. 返回 (status, detail): status ∈ True / False / 'skipped'.
+
+    各工具的预期变化:
+      add_video/add_text/add_image → 对应轨道段数 +1 (轨道不存在视为 0 → 新建轨也算成功)
+      add_audio                    → 传了 track_name 按轨; 否则总段数 +1
+      add_subtitle                 → subtitle 轨段数 == SRT cue 数(新建/重建) 或 总增量 >= cue 数(追加)
+      delete_segment               → 总段数 <= -1
+      delete_track                 → 目标轨消失/清空 (track_name/track_id 定位); delete_all → 总段数下降或清零
+      delete_empty_tracks          → 空轨数量下降 (总段数不变)
+      split_segment/duplicate_segment → 总段数 >= +1
+      update_*/replace_material/add_fade/add_filter/add_transition_to_segment/
+      add_animation_to_segment/move_segment/reorder_track → 总段数不变 且 目标段仍存在
+    """
+    if not after:
+        return False, '写后时间线读取失败'
+    tracks_b = {t['name']: t for t in (before or {}).get('tracks', [])}
+    tracks_a = {t['name']: t for t in after['tracks']}
+    total_b = (before or {}).get('total')
+    delta = after['total'] - total_b if total_b is not None else None
+
+    def _track_delta(track):
+        b = len(tracks_b[track]['segs']) if track in tracks_b else 0
+        a = len(tracks_a[track]['segs']) if track in tracks_a else 0
+        return a - b, f'{track} 轨 {b}→{a} 段'
+
+    if name == 'add_subtitle':
+        cues = _srt_cue_count(args.get('srt', ''))
+        sub = tracks_a.get('subtitle')
+        if cues and sub and len(sub['segs']) == cues:
+            return True, f'subtitle 轨 {len(sub["segs"])} 段 == SRT {cues} 条'
+        if delta is not None and cues and delta >= cues:
+            return True, f'总段数 +{delta} (≥ SRT {cues} 条)'
+        return False, (f'SRT {cues} 条但未见对应字幕段 '
+                       f'(subtitle 轨 {len(sub["segs"]) if sub else 0} 段, 总增量 {delta})')
+
+    if name in _ADD_DEFAULT_TRACK or name == 'add_audio':
+        track = args.get('track_name') or _ADD_DEFAULT_TRACK.get(name)
+        if track:
+            d, detail = _track_delta(track)
+            if d >= 1:
+                return True, detail + ' (+1 ✓)'
+            if delta is not None and delta >= 1:
+                return True, f'{detail}; 但总段数 +{delta} (按总量放行)'
+            return False, f'期望 {track} 轨 +1 段, 实际 {detail}'
+        if delta is not None and delta >= 1:
+            return True, f'总段数 +{delta}'
+        return False, f'期望总段数 +1, 实际增量 {delta}'
+
+    if name == 'delete_segment':
+        if delta is not None and delta <= -1:
+            return True, f'总段数 {delta}'
+        return False, f'期望总段数 -1, 实际增量 {delta}'
+
+    if name == 'delete_track':
+        if args.get('delete_all'):
+            if delta is not None and (delta <= -1 or after['total'] == 0):
+                return True, f'总段数 {delta}, 剩余 {after["total"]}'
+            return False, f'delete_all 后总段数增量 {delta}, 剩余 {after["total"]}'
+        target = args.get('track_name')
+        if not target and args.get('track_id') and before:
+            for t in before['tracks']:
+                if t['id'] == args['track_id']:
+                    target = t['name']
+                    break
+        if not target:
+            return 'skipped', '无法定位目标轨名 (只有 track_id 且 before 快照缺失)'
+        t = tracks_a.get(target)
+        if t is None or len(t['segs']) == 0:
+            return True, f'{target} 轨已消失/清空'
+        return False, f'{target} 轨仍有 {len(t["segs"])} 段'
+
+    if name == 'delete_empty_tracks':
+        if not before:
+            return 'skipped', 'before 快照缺失'
+        empty_b = sum(1 for t in before['tracks'] if len(t['segs']) == 0)
+        empty_a = sum(1 for t in after['tracks'] if len(t['segs']) == 0)
+        if empty_a < empty_b:
+            return True, f'空轨 {empty_b}→{empty_a}'
+        return False, f'空轨数量未减少 ({empty_b}→{empty_a})'
+
+    if name in ('split_segment', 'duplicate_segment'):
+        if delta is not None and delta >= 1:
+            return True, f'总段数 +{delta}'
+        return False, f'期望总段数 +1, 实际增量 {delta}'
+
+    # 剩余: update_segment/replace_material/update_text/add_fade/add_filter/
+    #       add_transition_to_segment/add_animation_to_segment/move_segment/reorder_track
+    # 预期: 总段数不变 + 目标段仍存在 (原地修改/挂件类, 深度内容核对靠模型按 2a/2b 纪律)
+    if not before:
+        return 'skipped', 'before 快照缺失'
+    if delta is not None and delta != 0:
+        return False, f'原地修改不应改变段数, 实际增量 {delta}'
+    sid = args.get('segment_id')
+    if sid:
+        if sid in after['segment_ids']:
+            return True, f'目标段 {str(sid)[:8]}… 仍在, 段数不变'
+        return False, f'目标段 {str(sid)[:8]}… 写后从时间线消失'
+    track = args.get('track_name')
+    if track:
+        if track in tracks_a:
+            idx = args.get('index')
+            if idx is None or idx < len(tracks_a[track]['segs']):
+                return True, f'{track} 轨存在, 段数不变'
+            return False, f'{track} 轨 index={idx} 越界 (现 {len(tracks_a[track]["segs"])} 段)'
+        return False, f'{track} 轨写后消失'
+    return 'skipped', '无 segment_id/track_name 可核对'
+
+
+
 def execute_tool(name, args, ctx):
     """执行工具调用, 返回结果 JSON 字符串. ctx: ToolContext (ctx.uid/ctx.asset_paths/draft_id/回调).
     自 render_server 端点闭包抽出, 逻辑与防御行为保持不变."""
@@ -770,6 +946,13 @@ def execute_tool(name, args, ctx):
     import memory_store as ms
     draft_id = ctx.draft_id  # 本地镜像; 三处赋值点写回 ctx
     result = {}
+
+    # 写后复核 (机制化 instructions 2b): 写类工具派发前抓 before 快照, 派发后 diff
+    verify_before = None
+    if name in _WRITE_VERIFY_TOOLS:
+        verify_did = args.get('draft_id') or draft_id
+        if verify_did:
+            verify_before = _tl_snapshot(verify_did, ctx.uid)
 
     def _passthrough(d, keys, args=args):
         """把 args 里非 None 的白名单键透传进 payload d (二次包装: 参数与 schema 同步)."""
@@ -1425,6 +1608,14 @@ def execute_tool(name, args, ctx):
                         'total_segments': sum(t['segment_count'] for t in tracks_out),
                         'source': r.get('source'),   # cache / disk —— 冷草稿时 disk
                     }
+                    if args.get('brief'):
+                        # 复核模式: 只留条数/起止范围, 输出极小不会被输出压缩截断
+                        result['tracks'] = [
+                            {'track': t['track'], 'type': t['type'],
+                             'segment_count': t['segment_count'], 'is_empty': t['is_empty'],
+                             'start_s': t['segments'][0]['start_s'] if t['segments'] else None,
+                             'end_s': t['segments'][-1]['end_s'] if t['segments'] else None}
+                            for t in tracks_out]
 
     elif name == 'list_templates':
         r = rs._get_internal('api/templates')
@@ -1435,7 +1626,7 @@ def execute_tool(name, args, ctx):
             'template': args.get('template', ''),
             'variables': args.get('variables', {}) or {},
             'render': False,
-        })
+        }, user_id=ctx.uid)
         if r.get('draft_id'):
             draft_id = r['draft_id']
             ctx.draft_id = draft_id
@@ -1491,6 +1682,21 @@ def execute_tool(name, args, ctx):
     # 确保 result 是 dict, 再序列化
     if not isinstance(result, dict):
         result = {'raw': str(result)[:500]}
+
+    # 写后复核收尾: 只核"自报成功"的写入. verified=false = 静默失效实锤, 直接改判失败,
+    # 模型按 instructions 2b 处理 (查现状→补齐/重做), 不带缺失继续.
+    if name in _WRITE_VERIFY_TOOLS and result.get('error') is None:
+        verify_after = _tl_snapshot(args.get('draft_id') or draft_id, ctx.uid)
+        status, detail = _verify_write(name, args, verify_before, verify_after)
+        result['verified'] = status if status == 'skipped' else bool(status)
+        result['verify_detail'] = detail
+        if status is False:
+            result['ok'] = False
+            result['error'] = (
+                f'写后复核未通过: {detail} —— 工具报成功但时间线未见预期变化(静默失效). '
+                f'请 get_draft_timeline(brief=true) 查真实现状, 补齐/重做后再继续, '
+                f'绝不带着缺失渲染')
+
     return json.dumps(result, ensure_ascii=False)
 
 

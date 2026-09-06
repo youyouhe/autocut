@@ -57,6 +57,9 @@ BSK_BIN = os.environ.get('BSK_BIN', _bsk_default if os.path.isfile(_bsk_default)
 # CORS 允许来源 (逗号分隔)。前端由本服务同源托管, 仅 Vite dev 需要。留空 = 不添加 CORS 头
 CORS_ALLOW_ORIGINS = [o.strip() for o in os.environ.get(
     'CORS_ALLOW_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173').split(',') if o.strip()]
+# 聊天 Agent 单轮 /api/chat 的墙钟预算 (分钟): 覆盖整轮全部工具调用与渲染监控,
+# 超时自动收尾 (已完成部分照常落库), 防御 max_turns 内的工具循环失控拖死会话
+AGENT_TURN_BUDGET_MIN = _int('AGENT_TURN_BUDGET_MIN', 30)
 
 # ============================================================ 认证 / 多租户
 # Flask session 签名密钥. 生产环境务必在 .env 设固定值 (否则每次重启所有会话失效).
@@ -106,8 +109,11 @@ ASSET_CACHE_DIR = os.environ.get('ASSET_CACHE_DIR', os.path.join(HERE, 'asset_ca
 STATIC_DIR = os.path.join(HERE, 'static')
 TEMPLATES_DIR = os.path.join(HERE, 'templates')
 CALIB_FILE = os.environ.get('CALIB_FILE', os.path.join(HERE, 'calib.json'))
+# 大文件分发目录 (渲染节点安装包等). 独立于 STATIC_DIR: 前端 `npm run build`
+# 会 emptyOutDir 清空 static/, 放这里面的大文件会被连带删掉.
+DOWNLOADS_DIR = os.environ.get('DOWNLOADS_DIR', os.path.join(HERE, 'downloads'))
 
-for _d in (UPLOAD_DIR, GUI_UPLOAD_DIR, CACHE_DIR, ASSET_CACHE_DIR):
+for _d in (UPLOAD_DIR, GUI_UPLOAD_DIR, CACHE_DIR, ASSET_CACHE_DIR, DOWNLOADS_DIR):
     os.makedirs(_d, exist_ok=True)
 
 # ============================================================ 渲染

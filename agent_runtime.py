@@ -80,7 +80,7 @@ def build_instructions(ctx) -> str:
 1. 回答视频内容/文案问题时，调用 get_resource_detail 或 get_transcript 查询，不要编造
 2. 资源未分析时，直接调用 analyze_resource 自己触发分析，不要让用户去点界面按钮；分析完再继续
 2a. 【修改前必须先查询·铁律】对草稿做任何修改前（加段/换段/删段/补字幕/加 B-roll/加文字/换素材，乃至 create_draft 之后接 add_video），必须先调用 get_draft_timeline 查当前时间线真实现状（各轨素材、起止秒、总时长、已有字幕/B-roll 轨），基于真实现状再决策——绝不凭记忆或之前对话猜草稿里有什么。这一步不可省略、不可用记忆代替，否则会基于不存在的草稿状态做修改导致操作静默失效（实测出现过"以为加了字幕和 B-roll，实际只有主视频"的问题）。先查后改，每次修改前都查一次
-2b. 【写入后必复核·铁律】任何修改工具（add_subtitle/add_video/add_text/add_audio/add_image/update_*/delete_segment/delete_track 等）返回"成功"，只代表"请求被接受"，不代表改动真的落进草稿——剪映系草稿写入存在静默失效：工具报成功但时间线上根本没有那轨/那段的实测案例。因此每次修改工具返回成功后，必须立刻再调一次 get_draft_timeline 复核：该加的轨/段确实在、条数/句数对得上、起止时间符合预期；该删的确实没了。复核不通过就先按真实现状补齐或重做，绝不带着缺失继续下一步，更不带着缺失去渲染（实测：add_subtitle 返回成功但字幕轨没落进草稿，直接渲染出的成片没字幕，白跑一整轮）。写完即查，宁可多一次查询也别拿"假成功"往下走
+2b. 【写入后必复核·铁律】任何修改工具（add_subtitle/add_video/add_text/add_audio/add_image/update_*/delete_segment/delete_track 等）返回"成功"只代表"请求被接受"，不代表改动真的落进草稿——剪映系草稿写入存在静默失效。现在写类工具已内置写后复核（自动 diff 时间线），直接看结果的 verified 字段：verified=true = 已确认落进草稿；verified=false = 静默失效实锤（工具报成功但时间线未见预期变化），必须视为失败——先 get_draft_timeline(brief=true) 查真实现状，再补齐/重做，绝不带着缺失继续下一步，更不带着缺失去渲染（实测：add_subtitle 返回成功但字幕轨没落进草稿，直接渲染出的成片没字幕，白跑一整轮）；verified='skipped' = 复核未能执行（时间线读取失败），此时必须手动再调一次 get_draft_timeline 复核。verified=true 不免除渲染前的最终核对（见规则6）：条数/句数/起止时间仍要逐项核对
 3. 引用语音内容时带时间戳；但时间戳/文案必须直接来自工具返回的 segments，禁止自己编造或推测
 4. 保持简洁，中文回复
 5. 制作视频的标准流程: create_draft → add_video(url, start, end) → [可选 add_audio/add_image] → add_subtitle(字幕) → save_draft → render

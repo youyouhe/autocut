@@ -34,12 +34,22 @@ TEMPLATES_DIR = config.TEMPLATES_DIR
 
 # ============================================================ 工具函数
 
-def _api(endpoint, data=None, method='POST'):
-    """调 render_server REST API (复用 cli.client)."""
+def _api(endpoint, data=None, method='POST', user_id=None):
+    """调 render_server REST API (复用 cli.client).
+    user_id 非空时走内部自调用通道: X-Internal-Token 旁路登录门 + _user_id 透传租户上下文
+    (否则 create_draft 无租户前缀, 普通用户拿不到自己模板生成的草稿)."""
     c = get_client()
+    headers = None
+    if user_id:
+        headers = {'X-Internal-Token': config.INTERNAL_TOKEN}
+        if method == 'POST':
+            data = dict(data or {})
+            data['_user_id'] = user_id
+        else:
+            endpoint = f"{endpoint}{'&' if '?' in endpoint else '?'}_user_id={user_id}"
     if method == 'POST':
-        return c.post(endpoint, json=data)
-    return c.get(endpoint)
+        return c.post(endpoint, json=data, headers=headers)
+    return c.get(endpoint, headers=headers)
 
 
 def _fill(template_str, variables):
@@ -93,7 +103,7 @@ def _scene_video(scene, ctx):
     if scene.get('transform_y') is not None:
         data['transform_y'] = scene['transform_y']
 
-    result = _api('add_video', data)
+    result = _api('add_video', data, user_id=ctx.get('user_id'))
     # 叠加层不推进 cursor
     if scene.get('overlay'):
         return result
@@ -135,7 +145,7 @@ def _scene_text(scene, ctx):
     if scene.get('track_name'):
         data['track_name'] = scene['track_name']
 
-    result = _api('add_text', data)
+    result = _api('add_text', data, user_id=ctx.get('user_id'))
     # 叠加层不推进 cursor
     if scene.get('overlay'):
         return result
@@ -163,7 +173,7 @@ def _scene_image(scene, ctx):
     if scene.get('transition'): data['transition'] = scene['transition']
     if scene.get('track_name'): data['track_name'] = scene['track_name']
 
-    result = _api('add_image', data)
+    result = _api('add_image', data, user_id=ctx.get('user_id'))
     # 叠加层不推进 cursor
     if scene.get('overlay'):
         return result
@@ -181,7 +191,7 @@ def _scene_audio(scene, ctx):
     }
     if scene.get('end'):
         data['end'] = _parse_time(scene['end'])
-    return _api('add_audio', data)
+    return _api('add_audio', data, user_id=ctx.get('user_id'))
 
 
 def _scene_subtitle(scene, ctx):
@@ -201,7 +211,7 @@ def _scene_subtitle(scene, ctx):
         }
         if style.get('font_size'): data['font_size'] = style['font_size']
         if style.get('font_color'): data['font_color'] = style['font_color']
-        results.append(_api('add_text', data))
+        results.append(_api('add_text', data, user_id=ctx.get('user_id')))
     return results
 
 
@@ -216,7 +226,7 @@ SCENE_HANDLERS = {
 
 # ============================================================ 核心引擎
 
-def render_template(template_path, variables=None, do_render=False, draft_folder=None):
+def render_template(template_path, variables=None, do_render=False, draft_folder=None, user_id=None):
     """
     执行模板: 读取 YAML → 填充变量 → 组装草稿 → (可选)渲染
 
@@ -225,6 +235,8 @@ def render_template(template_path, variables=None, do_render=False, draft_folder
         variables: 变量字典 {{var}} → value
         do_render: 是否自动渲染
         draft_folder: 草稿输出目录
+        user_id: 租户 id (web/agent 调用必须传; CLI 直跑可不传)。
+                 透传给所有 VectCutAPI 调用, 保证草稿落在该用户命名空间下。
 
     Returns:
         {draft_id, draft_url, render_task_id?}
@@ -245,14 +257,14 @@ def render_template(template_path, variables=None, do_render=False, draft_folder
     r = _api('create_draft', {
         'width': canvas.get('width', 1080),
         'height': canvas.get('height', 1920),
-    })
+    }, user_id=user_id)
     if not r.get('success'):
         raise Exception(f"创建草稿失败: {r}")
     draft_id = r['output']['draft_id']
     print(f"[草稿] draft_id={draft_id}", flush=True)
 
-    # ④ 处理场景
-    ctx = {'draft_id': draft_id, 'cursor': 0.0}
+    # ④ 处理场景 (user_id 随 ctx 流经各 handler → 每个 _api 调用透传租户上下文)
+    ctx = {'draft_id': draft_id, 'cursor': 0.0, 'user_id': user_id}
     scenes = tpl.get('scenes', [])
 
     for i, scene in enumerate(scenes):
@@ -274,7 +286,7 @@ def render_template(template_path, variables=None, do_render=False, draft_folder
     save_data = {'draft_id': draft_id}
     if draft_folder:
         save_data['draft_folder'] = draft_folder
-    r = _api('save_draft', save_data)
+    r = _api('save_draft', save_data, user_id=user_id)
     print(f"[保存] {r.get('success', False)}", flush=True)
 
     result = {'draft_id': draft_id, 'save': r}
@@ -282,7 +294,7 @@ def render_template(template_path, variables=None, do_render=False, draft_folder
     # ⑥ 渲染（可选）
     if do_render:
         print("[渲染] 提交...", flush=True)
-        r = _api(f'render/draft/{draft_id}')
+        r = _api(f'render/draft/{draft_id}', user_id=user_id)
         result['render'] = r
         if r.get('task_id'):
             print(f"[渲染] task_id={r['task_id']} (轮询 /render/status/{r['task_id']})", flush=True)

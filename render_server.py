@@ -2117,6 +2117,10 @@ def api_chat():
         async for ev in result.stream_events():
             if cancel.is_set():
                 break   # 用户点了停止: 不再消费事件, run 自然收尾
+            deadline = run_state.get('deadline')
+            if deadline and time.time() > deadline:
+                run_state['budget_exceeded'] = True   # 墙钟预算耗尽: 同 cancel, 优雅收尾
+                break
             if ev.type == 'run_item_stream_event':
                 item = ev.item
                 if item.type == 'message_output_item':
@@ -2128,6 +2132,9 @@ def api_chat():
         return produced
 
     async def _run_agent():
+        # 墙钟预算: 整轮(全部工具调用+渲染监控)超过 config.AGENT_TURN_BUDGET_MIN 分钟
+        # 就优雅收尾 —— 已完成部分照常落库, 提示用户发"继续"接着推进
+        run_state['deadline'] = time.time() + config.AGENT_TURN_BUDGET_MIN * 60
         # 先修复历史切口孤儿 (compaction 曾切在工具输出上 → DeepSeek 400), 再压缩
         try:
             if await agent_session.sanitize_session(session):
@@ -2163,6 +2170,9 @@ def api_chat():
                     await _asyncio.sleep(wait)
                     continue
                 q.put(('error', {'text': f'Agent 运行失败: {e}'}))
+                return
+            if run_state.get('budget_exceeded'):
+                q.put(('text', {'text': f'（本轮运行已达 {config.AGENT_TURN_BUDGET_MIN} 分钟上限, 自动收尾 —— 已完成的部分已保存; 发送「继续」我会接着推进）'}))
                 return
             if produced:
                 return
@@ -2423,7 +2433,9 @@ def api_template_render():
         from template_engine import render_template
         data = request.json or {}
         tpl_path = os.path.join(HERE, 'templates', data.get('template', '') + '.yaml')
-        result = render_template(tpl_path, data.get('variables', {}), do_render=data.get('render', False))
+        result = render_template(tpl_path, data.get('variables', {}),
+                                 do_render=data.get('render', False),
+                                 user_id=current_user_id())
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)})
@@ -2559,6 +2571,15 @@ def api_settings_test():
         ffmpeg_path = data.get('FFMPEG_PATH') if 'FFMPEG_PATH' in data else settings_store.effective_value('FFMPEG_PATH')
         return jsonify(settings_store.test_ffmpeg(ffmpeg_path))
     return jsonify({'ok': False, 'error': 'unknown target'}), 400
+
+
+# ============================================================ 大文件下载 (渲染节点安装包等)
+# 独立于 STATIC_DIR (前端 build 会 emptyOutDir 清空 static/, 放这里不受影响).
+DOWNLOADS_DIR = config.DOWNLOADS_DIR
+
+@app.route('/downloads/<path:filename>')
+def serve_download(filename):
+    return send_from_directory(DOWNLOADS_DIR, filename, as_attachment=True)
 
 
 # ============================================================ 静态文件 (React 构建产物)
