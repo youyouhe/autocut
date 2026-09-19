@@ -153,6 +153,8 @@ def main():
     ap.add_argument('--name', default=None, help='注入后草稿名 (默认 rd+毫秒)')
     ap.add_argument('--timeout', type=int, default=1800, help='整体墙钟上限秒')
     ap.add_argument('--no-desktop', action='store_true', help='前台模式 (默认独立桌面)')
+    ap.add_argument('--patch-out', default=None,
+                    help='P2-A: 改写 exportStart 请求 +0x50 输出路径到此路径 (mp4 全路径)')
     args = ap.parse_args()
     if not os.path.isdir(args.draft_dir):
         log('草稿目录不存在: %s' % args.draft_dir)
@@ -218,6 +220,11 @@ def main():
                     collector = TraceCollector(outdir)
                     script.on('message', collector.on_message)
                     script.load()
+                    if args.patch_out:
+                        pdir = os.path.dirname(os.path.abspath(args.patch_out))
+                        os.makedirs(pdir, exist_ok=True)
+                        script.exports_sync.setpatch(args.patch_out)
+                        log('P2-A 补丁已启用: 输出路径 → %s' % args.patch_out)
                     break
                 except Exception as e:
                     log('旁路 attach 失败: %r' % e)
@@ -242,9 +249,15 @@ def main():
             collector.finalize()
         log('渲染子进程 exit=%s' % proc.returncode)
         n = len(collector.metas)
+        patched = [m for m in collector.metas.values() if m.get('patched')]
+        for m in patched:
+            log('P2-A 补丁记录 id=%s: %s' % (m['id'], json.dumps(
+                m.get('patched'), ensure_ascii=False)))
         if n:
-            log('P1 成功: 捕获 %d 次 exportStart 族调用, dump 已存盘' % n)
-            log('下一步: 把 re_probe_out 目录拷回 Linux, 在 Linux 上按参考地图对字段')
+            log('P1/P2 成功: 捕获 %d 次 exportStart 族调用' % n)
+            if args.patch_out and not patched:
+                log('注意: 启用了补丁但没有 patched 记录 — 检查 setpatch 是否生效')
+            log('下一步: ①检查补丁路径是否真的落了 mp4 ②把 re_probe_out 传回 Linux')
         else:
             log('P1 无捕获 — 检查: ①videoeditor.dll 是否挂钩成功(symbols 行) '
                 '②渲染是否真的走到导出 ③上面 [drv] 行里驱动的真实报错')

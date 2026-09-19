@@ -13,6 +13,15 @@
 
 'use strict';
 
+// P2-A: 飞行中补丁 — 非空时, exportStart onEnter 把请求 +0x50 的输出路径
+// 原位改写为此路径 (要求目标 ≤ 原堆缓冲容量, 避免重分配/悬垂指针).
+var PATCH_PATH = null;
+rpc.exports.setpatch = function (p) {
+    PATCH_PATH = p;
+    send({ t: 'event', api: 'setpatch', path: p });
+    return true;
+};
+
 var HOOKED = false;
 var DUMP_CAP = 4 * 1024 * 1024;   // 单次 dump 上限 4MB (上次实测 288KB 全块)
 var PAGE = 4096;
@@ -224,13 +233,15 @@ function installHooks() {
                            stack: (e && e.stack) ? ('' + e.stack) : null });
                 }
                 var meta = { t: 'end', id: id, api: name, reqPtr: 'null' };
+                var req = null, reqOK = false;
                 try { meta.tid = Process.getCurrentThreadId(); } catch (e) { fail('tid', e); }
                 try { meta.ret = modOff(this.returnAddress); } catch (e) { fail('ret', e); }
                 try { meta.stack = backtrace(this.context); } catch (e) { fail('bt', e); }
                 try {
-                    var req = args[0].readPointer();   // shared_ptr 按值 → RCX 指向 {ReqStruct*, ctrl}
+                    req = args[0].readPointer();       // shared_ptr 按值 → RCX 指向 {ReqStruct*, ctrl}
                     meta.reqPtr = req.toString();
                     if (!req.isNull()) {
+                        reqOK = true;
                         meta.bytes = streamDump(id, req);
                         // 结构体漫游: 前 2KB 字段分类 + RTTI 类名
                         try {
@@ -244,6 +255,26 @@ function installHooks() {
                     meta.bytes = 0;
                 }
                 try { meta.sid = args[3].toInt32(); } catch (e) { /* 无尾参的 API */ }
+                // P2-A: 原位改写 +0x50 输出路径 (MSVC string: ptr@0 size@16 cap@24;
+                // 堆串才可原位改写 — 只覆盖 ≤cap 字节, 指针不动, 引擎照常 free)
+                if (PATCH_PATH && reqOK) {
+                    try {
+                        var strObj = req.add(0x50);
+                        var osize = strObj.add(16).readU64().toNumber();
+                        var ocap = strObj.add(24).readU64().toNumber();
+                        meta.patched = { origSize: osize, cap: ocap };
+                        if (ocap > 15 && PATCH_PATH.length <= ocap) {
+                            var obuf = strObj.readPointer();
+                            meta.patched.from = obuf.readUtf8String(osize);
+                            obuf.writeUtf8String(PATCH_PATH);
+                            strObj.add(16).writeU64(PATCH_PATH.length);
+                            meta.patched.to = PATCH_PATH;
+                        } else {
+                            meta.patched.err = ocap <= 15 ? 'SSO 内联串不可原位改写'
+                                                          : '新路径超长 cap=' + ocap;
+                        }
+                    } catch (e) { meta.patched = { err: '' + e }; }
+                }
                 send(meta);
             }
         });
