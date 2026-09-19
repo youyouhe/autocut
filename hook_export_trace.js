@@ -112,6 +112,65 @@ function installHooks() {
     // NewVEWrapper::export_start(this, const string& out, const ExportConfig&,
     //                            fn progress, fn done, string extra)
     // ExportConfig 是明文参数结构体 — P2 直调的核心目标, 全量 dump.
+    function rttiName(objPtr) {
+        // MSVC x64: vtable[-1] → CompleteObjectLocator, COL+12 = TypeDescriptor RVA,
+        // TypeDescriptor+16 = 类名 (".?AVReqStruct@lyra@@")
+        try {
+            var vf = objPtr.readPointer();
+            var col = vf.add(-8).readPointer();
+            var mod = Process.findModuleByAddress(vf);
+            if (!mod) return '(no-mod)';
+            var td = mod.base.add(col.add(12).readU32());
+            return td.add(16).readCString(160);
+        } catch (e) { return '(rtti-err ' + e + ')'; }
+    }
+
+    // 结构体漫游: 8字节步进分类字段, 堆字符串/指针指向的内容直接解引用读出.
+    // len 字节内的形状判断需要读 base+o+16/+24, 允许越界 (try 包裹).
+    function structWalk(base, len) {
+        var out = [];
+        for (var o = 0; o < len; o += 8) {
+            var v;
+            try { v = base.add(o).readPointer(); } catch (e) { break; }
+            var ent = { off: o };
+            if (v.isNull()) { ent.k = 'null'; out.push(ent); continue; }
+            var done = false;
+            try {
+                var size = base.add(o + 16).readU64().toNumber();
+                var cap = base.add(o + 24).readU64().toNumber();
+                if (cap > 15 && size <= cap && size < 65536 && size > 0) {
+                    ent.k = 'string'; ent.size = size;
+                    ent.s = v.readUtf8String(Math.min(size, 300));
+                    out.push(ent); done = true;
+                } else if (cap === 15 && size > 0 && size <= 15) {
+                    var s2 = base.add(o).readUtf8String(size);
+                    if (/^[\x20-\x7e]+$/.test(s2)) {
+                        ent.k = 'sso'; ent.s = s2;
+                        out.push(ent); done = true;
+                    }
+                }
+            } catch (e) { /* 非 string 形状 */ }
+            if (done) continue;
+            try {
+                var st = v.readUtf8String(96);
+                if (st && /^[\x20-\x7e]{6,}/.test(st)) {
+                    ent.k = 'ptr-ascii'; ent.s = st.slice(0, 160);
+                    out.push(ent); continue;
+                }
+                var w = v.readUtf16String(96);
+                if (w && /^[\x20-\x7e]{6,}/.test(w)) {
+                    ent.k = 'ptr-wide'; ent.s = w.slice(0, 160);
+                    out.push(ent); continue;
+                }
+                ent.k = 'ptr'; ent.s = '' + v;
+            } catch (e) {
+                ent.k = 'int?'; ent.s = '' + v;
+            }
+            out.push(ent);
+        }
+        return out;
+    }
+
     if (found.newVE_export_start) {
         Interceptor.attach(found.newVE_export_start, {
             onEnter: function (args) {
@@ -173,6 +232,12 @@ function installHooks() {
                     meta.reqPtr = req.toString();
                     if (!req.isNull()) {
                         meta.bytes = streamDump(id, req);
+                        // 结构体漫游: 前 2KB 字段分类 + RTTI 类名
+                        try {
+                            send({ t: 'struct', id: id, api: name,
+                                   rtti: rttiName(req),
+                                   fields: structWalk(req, 2048) });
+                        } catch (e) { fail('walk', e); }
                     } else { meta.bytes = 0; }
                 } catch (e) {
                     fail('req', e);

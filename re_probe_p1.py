@@ -88,6 +88,13 @@ class TraceCollector:
                 log('警告: dump %d 块乱序 off=%d 期望=%d' % (fid, p['off'], info['expect_off']))
             info['f'].write(data)
             info['expect_off'] = p['off'] + len(data)
+        elif t == 'struct':
+            import json as _json
+            path = os.path.join(self.outdir, 'struct_%s_%s.json' % (p.get('id'), p.get('api')))
+            with open(path, 'w', encoding='utf-8') as f:
+                _json.dump(p, f, ensure_ascii=False, indent=1)
+            log('结构体漫游已存: %s (RTTI=%s, %d 字段)' % (
+                os.path.basename(path), p.get('rtti'), len(p.get('fields') or [])))
         elif t == 'end':
             self.metas[p['id']] = p
             if 'f' in self.dumps.get(p['id'], {}):
