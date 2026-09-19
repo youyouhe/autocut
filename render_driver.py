@@ -26,6 +26,11 @@ import config
 
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 HOOK        = os.path.join(SCRIPT_DIR, 'hook_focus.js')   # agent 线程 focusWindow + 点击
+HOOK_API    = os.path.join(SCRIPT_DIR, 'hook_api.js')     # P3: exportStart 输出路径补丁 (api 导出模式)
+# P3 api 导出模式: 点一次导出按钮 → hook 把 exportStart 请求 +0x50 输出路径补丁为
+# VIDEOS\<草稿名>.mp4 → 引擎直写该路径 → 驱动监视文件稳定即完成 (不点确认/完成弹窗).
+# RENDER_EXPORT_MODE=ui 可强制回传统点击链; api 失败时驱动内部也自动回退.
+API_MODE    = os.environ.get('RENDER_EXPORT_MODE', getattr(config, 'RENDER_EXPORT_MODE', 'api')) != 'ui'
 CALIB_FILE  = config.CALIB_FILE                            # 现在只存 global 坐标
 MONITOR_LOG = os.path.join(SCRIPT_DIR, 'render_monitor.log')
 MONITOR_PY  = os.path.join(SCRIPT_DIR, 'render_monitor.py')
@@ -828,11 +833,40 @@ class GlobalClickWatcher:
 class Driver:
     def __init__(self):
         self.pid = None; self.session = None; self.script = None
+        self.api_script = None  # P3: hook_api.js 第二脚本 (同 session, 补丁输出路径)
+        self.api_patched = None  # 最近一次 apipatch 成功的目标路径 (None=未补丁)
         self.cond = threading.Condition()
         self.capture_count = 0
         self.last_capture = None
         self.monitor_proc = None
         self.injected_name = None  # 本次注入的草稿名 (main finally 杀完剪映后统一清理)
+
+    def _on_api_message(self, msg, data):
+        if msg['type'] == 'error':
+            log('[api script err] %s' % msg.get('description')); return
+        if msg['type'] != 'send': return
+        p = msg['payload']
+        if not isinstance(p, dict): return
+        if p.get('t') == 'apipatch':
+            if p.get('ok'):
+                self.api_patched = p.get('to')
+                log('[api] ✓ 输出路径已补丁: %s' % p.get('to'))
+            else:
+                self.api_patched = None
+                log('[api] ✗ 补丁未生效: %s (from=%s)' % (p.get('why'), p.get('from')))
+        elif p.get('t') == 'apilog':
+            log('[api] %s' % p.get('msg'))
+
+    def _api_setpatch(self, path):
+        """设置/清除 api hook 的补丁路径; api 脚本不可用时静默返回 False."""
+        if not self.api_script:
+            return False
+        try:
+            self.api_script.exports_sync.setpatch(path or '')
+            return bool(path)
+        except Exception as e:
+            log('[api] setpatch 异常: %r' % e)
+            return False
 
     def on_message(self, msg, data):
         if msg['type'] == 'error':
@@ -874,6 +908,17 @@ class Driver:
         self.script = self.session.create_script(code)
         self.script.on('message', self.on_message)
         self.script.load()
+        # P3: 同 session 第二脚本 — hook_api.js (补丁输出路径). 装载失败不致命,
+        # api 模式会自动回退传统点击链.
+        try:
+            if os.path.exists(HOOK_API):
+                api_code = open(HOOK_API, encoding='utf-8').read()
+                self.api_script = self.session.create_script(api_code)
+                self.api_script.on('message', self._on_api_message)
+                self.api_script.load()
+        except Exception as e:
+            log('[api] hook_api 装载失败 (api 模式将回退): %r' % e)
+            self.api_script = None
         time.sleep(1.0)  # 等 ready
         return True
 
@@ -1406,19 +1451,116 @@ class Driver:
             if self.session: self.session.detach()
         except: pass
 
-    def render_draft(self, src_draft_dir, draft_name=None, search_term=None):
+    def _api_disable(self):
+        """关闭补丁 (防止关编辑器时 close-time exportStart 再次覆盖交付文件)."""
+        self._api_setpatch(None)
+        self.api_patched = None
+
+    def _wait_file_stable(self, path, timeout=600, min_size=100000,
+                          stable_needed=2, interval=2.0):
+        """等文件出现且连续 stable_needed 次采样大小不变 (完成判定, 同 wait_render_done 逻辑)."""
+        deadline = time.time() + timeout
+        last = -1
+        stable = 0
+        while time.time() < deadline:
+            try:
+                sz = os.path.getsize(path)
+            except OSError:
+                sz = -1
+            if sz >= min_size and sz == last:
+                stable += 1
+                if stable >= stable_needed:
+                    return True
+            else:
+                stable = 0
+            last = sz
+            time.sleep(interval)
+        return False
+
+    def _export_api(self, caps, api_out):
+        """P3 api 导出: 点一次导出按钮 → hook 补丁 exportStart +0x50 输出路径 →
+        引擎直写 api_out → 文件大小稳定即完成 → ESC 清导出面板.
+        任何环节失败返回 False (调用方回退传统 confirm 点击链)."""
+        if not self._api_setpatch(api_out):
+            log('api: hook 未就位, 转传统链')
+            return False
+        self.api_patched = None
+        try:
+            os.remove(api_out)
+        except OSError:
+            pass
+        base_show = self.get_shown_count()
+        log('点导出按钮 (api 模式, 仅此一击, 不点确认)')
+        self.click_main_button(['导出'], caps['export']['lx'], caps['export']['ly'])
+        new_show = self.wait_new_window(base_show, timeout=8)
+        if not new_show:
+            # 弹窗漏检兜底 (同传统链): showCount 可能漏检 QML 弹窗
+            for _ in range(6):
+                mb = None
+                try:
+                    mb = self.script.exports_sync.findmodalbutton(
+                        json.dumps(['导出'], ensure_ascii=False))
+                except Exception:
+                    pass
+                if mb and mb.get('ok'):
+                    log('  ✓ showCount 未变但 modal 已出现 (漏检兜底)')
+                    new_show = (base_show or 0) + 1
+                    break
+                time.sleep(1)
+        if not new_show:
+            log('  ⚠ api: 导出窗口未出现, 转传统链')
+            self._api_disable()
+            return False
+        emit_progress('export', 50)
+        # 等 hook 补丁生效 (exportStart 在面板打开瞬间触发) + 引擎写盘完成
+        t0 = time.time()
+        while time.time() - t0 < 15 and not self.api_patched:
+            time.sleep(0.5)
+        if not self.api_patched:
+            log('  ⚠ api: 15s 内未见补丁生效 (面板打开但 exportStart 未触发?), 转传统链')
+            self._api_disable()
+            return False
+        timeout = int(getattr(config, 'RENDER_TIMEOUT', 900) or 900)
+        if not self._wait_file_stable(api_out, timeout=timeout):
+            log('  ⚠ api: 补丁输出 %ds 内未稳定完成, 转传统链' % timeout)
+            self._api_disable()
+            return False
+        log('  ✓ api 渲染完成: %s' % api_out)
+        emit_progress('confirm', 60)
+        self._api_disable()  # 先关补丁再关编辑器 (close-time exportStart 会重渲染覆盖)
+        # 清导出面板: 不点确认 → 无完成弹窗. ESC 两拍, 若出现"放弃导出?"确认则点掉.
+        press_escape(); time.sleep(1.2)
+        press_escape(); time.sleep(1.0)
+        try:
+            mb = self.script.exports_sync.findmodalbutton(
+                json.dumps(['确定', '放弃', '是'], ensure_ascii=False))
+            if mb and mb.get('ok'):
+                log('  放弃导出确认弹窗出现, 点掉')
+                self.click_modal_button(['确定', '放弃', '是'],
+                                        caps['confirm']['lx'], caps['confirm']['ly'])
+                time.sleep(1)
+        except Exception:
+            pass
+        return True
+
+    def render_draft(self, src_draft_dir, draft_name=None, search_term=None, api_out=None):
         """渲染指定草稿: 注入(让剪映识别) → 搜索定位 → 打开 → 导出.
         draft_name: 注入后的草稿名 (默认 源名_render)
-        search_term: 搜索关键词 (默认 = draft_name). 用唯一名字保证结果唯一."""
+        search_term: 搜索关键词 (默认 = draft_name). 用唯一名字保证结果唯一.
+        api_out: P3 api 导出模式的输出 mp4 全路径; None 时按 API_MODE 开关用
+                 VIDEOS/<draft_name>.mp4. api 失败自动回退传统 confirm 点击链."""
         import shutil
         if not os.path.exists(CALIB_FILE):
             log('没有 calib.json, 先 calibrate'); return False
         caps = json.load(open(CALIB_FILE, encoding='utf-8'))
+        api_mode = (api_out is not None) or API_MODE
         # 桌面模式直接点首页卡片, 无需搜索坐标; 前台模式才需要 search_btn/search_box/result_card
+        # api 模式不点 confirm 弹窗, calib 缺 confirm 坐标也可跑 (但回退链需要)
         if DESKTOP_MODE:
-            need = ('card', 'export', 'confirm')
+            need = ('card', 'export') if api_mode else ('card', 'export', 'confirm')
         else:
-            need = ('search_btn', 'search_box', 'result_card', 'export', 'confirm')
+            need = ('search_btn', 'search_box', 'result_card', 'export') if api_mode \
+                else ('search_btn', 'search_box', 'result_card', 'export', 'confirm')
         for k in need:
             if k not in caps:
                 log('calib 缺 %s' % k); return False
@@ -1498,63 +1640,79 @@ class Driver:
         emit_progress('open', 30)
         time.sleep(1)
 
-        # 3. 导出: 点导出 → 等 modal → 点 confirm → 等 mp4 (失败重试, 每次重试重新点导出刷 modal)
+        # 3. 导出: 优先 api 模式 (P3: 点一次导出按钮, hook 补丁输出路径, 引擎直写,
+        #    监视文件稳定即完成 — 不点确认/完成弹窗); 失败自动回退传统 confirm 点击链.
         ok = False
-        for attempt in range(4):
-            base_show = self.get_shown_count()
-            log('点导出按钮 (尝试%d)' % (attempt + 1))
-            self.click_main_button(['导出'], caps['export']['lx'], caps['export']['ly'])
-            new_show = self.wait_new_window(base_show, timeout=8)
-            if not new_show:
-                # 弹窗检测兜底: showCount 可能漏检 QML 弹窗 (实测存在), 直接找 modal 里
-                # 的确认按钮 —— 找得到 = 弹窗其实已经打开 (后续重试点击反而会打在遮罩上
-                # 把弹窗关掉, 造成"点了没反应"的假象 + 截图永远是正常编辑器).
-                for _ in range(6):
-                    mb = None
-                    try:
-                        mb = self.script.exports_sync.findmodalbutton(json.dumps(['导出'], ensure_ascii=False))
-                    except Exception:
-                        pass
-                    if mb and mb.get('ok'):
-                        log('  ✓ showCount 未变但 modal 确认按钮已出现 (hook 漏检弹窗, 按已打开处理)')
-                        new_show = (base_show or 0) + 1
-                        break
-                    time.sleep(1)
-            if new_show:
-                log('  ✓ 导出窗口出现 (showCount %d->%d)' % (base_show, new_show))
+        api_ok = False
+        if api_mode and self.api_script:
+            if api_out is None:
+                api_out = os.path.join(config.VIDEOS_DIR, (draft_name or 'rd') + '.mp4')
+            api_ok = self._export_api(caps, api_out)
+            if api_ok:
+                ok = True
             else:
-                # 恢复动作: 光重试同样的点击没用 (卡死状态会 4 连败) ——
-                # ESC 清掉可能挂着的隐藏 modal, 重新拉起/激活编辑器窗口再试.
-                log('  ⚠ 导出窗口未出现, 恢复后重试 (ESC 清残留弹窗 + 重激活窗口)')
-                press_escape()
-                if not DESKTOP_MODE:
-                    focus_jianying()
+                # 回退传统链: 清掉可能的半成品 (app 的改名交付遇同名文件会失败)
+                try: os.remove(api_out)
+                except OSError: pass
+                if 'confirm' not in caps:
+                    log('api 失败且 calib 缺 confirm 坐标, 无法回退, 中止')
+                    self.injected_name = draft_name; return False
+        if not ok:
+            for attempt in range(4):
+                base_show = self.get_shown_count()
+                log('点导出按钮 (尝试%d)' % (attempt + 1))
+                self.click_main_button(['导出'], caps['export']['lx'], caps['export']['ly'])
+                new_show = self.wait_new_window(base_show, timeout=8)
+                if not new_show:
+                    # 弹窗检测兜底: showCount 可能漏检 QML 弹窗 (实测存在), 直接找 modal 里
+                    # 的确认按钮 —— 找得到 = 弹窗其实已经打开 (后续重试点击反而会打在遮罩上
+                    # 把弹窗关掉, 造成"点了没反应"的假象 + 截图永远是正常编辑器).
+                    for _ in range(6):
+                        mb = None
+                        try:
+                            mb = self.script.exports_sync.findmodalbutton(json.dumps(['导出'], ensure_ascii=False))
+                        except Exception:
+                            pass
+                        if mb and mb.get('ok'):
+                            log('  ✓ showCount 未变但 modal 确认按钮已出现 (hook 漏检弹窗, 按已打开处理)')
+                            new_show = (base_show or 0) + 1
+                            break
+                        time.sleep(1)
+                if new_show:
+                    log('  ✓ 导出窗口出现 (showCount %d->%d)' % (base_show, new_show))
                 else:
-                    hwnd = find_jy_hwnd()
-                    if hwnd:
-                        _activate_hwnd(hwnd)
-                if attempt >= 1:
-                    resize_jianying_settled()  # 第 2 次起再把窗口拉回校准尺寸
-                time.sleep(1); continue
-            emit_progress('export', 50)
-            time.sleep(0.8)  # 等 modal 完全显示
-            # confirm 在 modal (lastShownWin = 最近显示的 = 导出窗口)
-            st = self.script.exports_sync.lastshown()
-            log('  modal win=%s (showCount=%d)' % (st.get('win'), st.get('showCount')))
-            log('点确认按钮(modal)'); self.click_modal_button(['导出'], caps['confirm']['lx'], caps['confirm']['ly'])
-            emit_progress('confirm', 60)
-            # 等渲染完成. 之前用 20s 短等: 大草稿(如 141MB 输出)编码 ~18s + 落盘/搬运耗时,
-            # wait_render_done 要文件出现后再连续 2 次采样大小不变(~4.5s)才判完成, 20s 会
-            # 差几十秒误判"未触发渲染"→ 重试点导出(此时剪映已进入完成态弹不出导出框)→ 整轮
-            # 误报失败, 但 mp4 其实已生成. wait_render_done 成功即刻返回, 放长超时不拖慢成功路径.
-            if self.wait_render_done(draft_name, timeout=90):
-                ok = True; break
-            # 兜底: wait 超时不等于失败 —— 直接查最终 mp4 是否已存在(>100KB 即算),
-            # 避免上面说的"文件刚好压线生成完但采样没追上"的误判.
-            if draft_name and self._final_mp4_exists(draft_name):
-                log('  ✓ wait 超时但 mp4 已存在, 判定成功')
-                ok = True; break
-            log('  ⚠ confirm 未触发渲染 (attempt %d), 重新点导出' % (attempt + 1))
+                    # 恢复动作: 光重试同样的点击没用 (卡死状态会 4 连败) ——
+                    # ESC 清掉可能挂着的隐藏 modal, 重新拉起/激活编辑器窗口再试.
+                    log('  ⚠ 导出窗口未出现, 恢复后重试 (ESC 清残留弹窗 + 重激活窗口)')
+                    press_escape()
+                    if not DESKTOP_MODE:
+                        focus_jianying()
+                    else:
+                        hwnd = find_jy_hwnd()
+                        if hwnd:
+                            _activate_hwnd(hwnd)
+                    if attempt >= 1:
+                        resize_jianying_settled()  # 第 2 次起再把窗口拉回校准尺寸
+                    time.sleep(1); continue
+                emit_progress('export', 50)
+                time.sleep(0.8)  # 等 modal 完全显示
+                # confirm 在 modal (lastShownWin = 最近显示的 = 导出窗口)
+                st = self.script.exports_sync.lastshown()
+                log('  modal win=%s (showCount=%d)' % (st.get('win'), st.get('showCount')))
+                log('点确认按钮(modal)'); self.click_modal_button(['导出'], caps['confirm']['lx'], caps['confirm']['ly'])
+                emit_progress('confirm', 60)
+                # 等渲染完成. 之前用 20s 短等: 大草稿(如 141MB 输出)编码 ~18s + 落盘/搬运耗时,
+                # wait_render_done 要文件出现后再连续 2 次采样大小不变(~4.5s)才判完成, 20s 会
+                # 差几十秒误判"未触发渲染"→ 重试点导出(此时剪映已进入完成态弹不出导出框)→ 整轮
+                # 误报失败, 但 mp4 其实已生成. wait_render_done 成功即刻返回, 放长超时不拖慢成功路径.
+                if self.wait_render_done(draft_name, timeout=90):
+                    ok = True; break
+                # 兜底: wait 超时不等于失败 —— 直接查最终 mp4 是否已存在(>100KB 即算),
+                # 避免上面说的"文件刚好压线生成完但采样没追上"的误判.
+                if draft_name and self._final_mp4_exists(draft_name):
+                    log('  ✓ wait 超时但 mp4 已存在, 判定成功')
+                    ok = True; break
+                log('  ⚠ confirm 未触发渲染 (attempt %d), 重新点导出' % (attempt + 1))
         if not ok:
             # 最终兜底: 4 轮都没等到也要再直接查一次文件, 防止把已成功的渲染误报为失败.
             if draft_name and self._final_mp4_exists(draft_name):
@@ -1567,7 +1725,9 @@ class Driver:
         emit_progress('done', 100)
 
         # 4. 关闭完成提示 (完成窗口 modal) + 关编辑器回首页
-        if ok and 'close_done' in caps:
+        #    api 模式没有完成弹窗 (没点确认, 导出面板已在 _export_api 里 ESC 清掉),
+        #    跳过 close_done 直接关编辑器.
+        if ok and 'close_done' in caps and not api_ok:
             base_show = self.get_shown_count()
             # 等完成窗口出现
             new_show = self.wait_new_window(base_show, timeout=8)
@@ -1701,21 +1861,24 @@ def main():
             # 渲染指定草稿: 注入 + 搜索 + 打开 + 导出
             # 过滤掉 -- 开头的开关及其紧跟的值 (--desktop-name <值> 等), 只留位置参数.
             raw = sys.argv[2:]
-            value_opts = ('--desktop-name', '--pid')  # 这些开关后面跟一个值, 需连值一起跳过
+            value_opts = ('--desktop-name', '--pid', '--api-out')  # 这些开关后面跟一个值
             args = []
+            api_out = None
             i = 0
             while i < len(raw):
                 a = raw[i]
                 if a in value_opts:
+                    if a == '--api-out' and i + 1 < len(raw):
+                        api_out = raw[i + 1]
                     i += 2; continue           # 跳过开关 + 它的值
                 if a.startswith('--'):
                     i += 1; continue            # 跳过无值开关
                 args.append(a); i += 1
             if not args:
-                log('用法: render-draft <草稿文件夹路径> [搜索名]'); sys.exit(2)
+                log('用法: render-draft <草稿文件夹路径> [搜索名] [--api-out <mp4全路径>]'); sys.exit(2)
             src = args[0]
             name = args[1] if len(args) > 1 else None
-            ok = d.render_draft(src, draft_name=name)
+            ok = d.render_draft(src, draft_name=name, api_out=api_out)
             if close_after and ok:
                 log('渲染完成, 关闭剪映...')
                 d.detach()

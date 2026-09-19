@@ -25,6 +25,7 @@ $files = @(
     'config.py',
     'task_store.py',
     'hook_focus.js',
+    'hook_api.js',
     'hook_export_trace.js',
     're_probe_p1.py'
 )

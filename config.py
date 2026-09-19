@@ -98,6 +98,9 @@ DRAFT_ROOT = os.environ.get('JY_DRAFT_ROOT', os.path.join(
     'Projects', 'com.lveditor.draft'))
 # 剪映默认导出目录
 VIDEOS_DIR = os.environ.get('VIDEOS_DIR', os.path.join(USERPROFILE, 'Videos'))
+# P3 导出模式: 'api' = 点一次导出按钮, hook 补丁 exportStart 输出路径直写成片
+# (不点确认/完成弹窗, 失败自动回退传统点击链); 'ui' = 强制传统点击链.
+RENDER_EXPORT_MODE = os.environ.get('RENDER_EXPORT_MODE', 'api')
 
 # ============================================================ 工作目录
 UPLOAD_DIR = os.environ.get('UPLOAD_DIR', os.path.join(HERE, 'render_uploads'))
