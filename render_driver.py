@@ -31,6 +31,13 @@ HOOK_API    = os.path.join(SCRIPT_DIR, 'hook_api.js')     # P3: exportStart 输�
 # VIDEOS\<草稿名>.mp4 → 引擎直写该路径 → 驱动监视文件稳定即完成 (不点确认/完成弹窗).
 # RENDER_EXPORT_MODE=ui 可强制回传统点击链; api 失败时驱动内部也自动回退.
 API_MODE    = os.environ.get('RENDER_EXPORT_MODE', getattr(config, 'RENDER_EXPORT_MODE', 'api')) != 'ui'
+# P3.6 替身卡模式: 任务草稿的内容文件覆写到固定替身卡 (p3_stand_in, 永不清删),
+# 每次渲染只点替身卡 — app 点卡片时重新从磁盘读 draft_content.json (P1b trace 实锤
+# KERNELBASE 读文件 + deserialize_persistent_draft), 故点替身卡即加载任务内容.
+# 收益: 逐次注入草稿的首页可见性竞态/僵尸清扫/幽灵索引修剪全部退役 (任务草稿文件夹
+# 仍会创建用于素材路径回填, 但不再依赖首页识别它, 渲染完照常清理).
+STAND_IN_NAME = 'p3_stand_in'
+SWAP_MODE   = os.environ.get('RENDER_DRAFT_SWAP', getattr(config, 'RENDER_DRAFT_SWAP', '1')) == '1'
 CALIB_FILE  = config.CALIB_FILE                            # 现在只存 global 坐标
 MONITOR_LOG = os.path.join(SCRIPT_DIR, 'render_monitor.log')
 MONITOR_PY  = os.path.join(SCRIPT_DIR, 'render_monitor.py')
@@ -1572,6 +1579,39 @@ class Driver:
             pass
         return True
 
+    def _prepare_stand_in(self, draft_name):
+        """P3.6: 准备替身卡 — 任务草稿(已回填素材路径)的内容文件覆写到固定替身卡.
+        点替身卡 = app 从磁盘加载任务内容 (P1b: 点卡片时重新读 draft_content.json).
+        替身卡首次从任务草稿克隆 (跳过 assets 大文件), 之后每渲染只覆写 content 文件.
+        成功返回替身卡名, 失败 None (调用方回退点任务卡片)."""
+        import shutil
+        try:
+            stand_in = os.path.join(DRAFT_ROOT, STAND_IN_NAME)
+            task_dir = os.path.join(DRAFT_ROOT, draft_name)
+            task_content = os.path.join(task_dir, 'draft_content.json')
+            if not os.path.isfile(task_content):
+                return None
+            if not os.path.isdir(stand_in):
+                shutil.copytree(task_dir, stand_in,
+                                ignore=shutil.ignore_patterns('assets'))
+                mp = os.path.join(stand_in, 'draft_meta_info.json')
+                if os.path.exists(mp):
+                    m = json.load(open(mp, encoding='utf-8'))
+                    m['draft_name'] = STAND_IN_NAME
+                    m['draft_fold_path'] = stand_in.replace('\\', '/')
+                    json.dump(m, open(mp, 'w', encoding='utf-8'), ensure_ascii=False)
+                log('P3.6 替身卡已创建: %s' % stand_in)
+            shutil.copyfile(task_content, os.path.join(stand_in, 'draft_content.json'))
+            mp = os.path.join(stand_in, 'draft_meta_info.json')
+            if os.path.exists(mp):
+                m = json.load(open(mp, encoding='utf-8'))
+                m['tm_draft_modified'] = int(time.time() * 1000000)
+                json.dump(m, open(mp, 'w', encoding='utf-8'), ensure_ascii=False)
+            return STAND_IN_NAME
+        except Exception as e:
+            log('P3.6 替身卡准备失败, 回退点任务卡: %r' % e)
+            return None
+
     def render_draft(self, src_draft_dir, draft_name=None, search_term=None, api_out=None):
         """渲染指定草稿: 注入(让剪映识别) → 搜索定位 → 打开 → 导出.
         draft_name: 注入后的草稿名 (默认 源名_render)
@@ -1631,26 +1671,35 @@ class Driver:
             log('dev 未获取, 中止'); self.injected_name = draft_name; return False
 
         # 2. 打开草稿: 桌面模式按草稿名在首页网格里定位卡片点击(不再用固定 caps['card'] 坐标),
-        # 前台模式用搜索
+        # 前台模式用搜索. P3.6: 替身卡模式下点固定替身卡 (内容文件已覆写为任务草稿),
+        # 替身卡打开失败自动回退点任务卡片.
         if DESKTOP_MODE:
-            # 桌面模式: 按草稿名(draft_name)在首页 QQuickItem 树里找该草稿的卡片, 取其 MouseArea
-            # 几何 + 首页 HWND, _activate_hwnd 后 _post_click_hwnd 点卡片中心. 这取代了旧的固定
-            # caps['card'] 像素坐标 —— 那个坐标是早期对别的草稿布局校准的, inject_draft 让新草稿
-            # 排到首页第一张卡片后, 旧坐标会落到别的旧草稿(视频 path 被清空 → 10006 缺失文件),
-            # 每次打开的都是错草稿. 按名定位确保打开的就是刚注入的草稿. findcard 不经过 frida
-            # 注入的点击管线(只读树), _post_click_hwnd 直接 PostMessage 到 HWND, 不会摧毁 session.
+            card_names = [draft_name]
+            if api_mode and SWAP_MODE:
+                stand_in = self._prepare_stand_in(draft_name)
+                if stand_in:
+                    card_names = [stand_in, draft_name]  # 替身卡优先, 任务卡兜底
             opened = False
-            for card_attempt in range(8):
-                base_show = self.get_shown_count()
-                log('点草稿卡片(尝试%d) — findcard 按名定位 %s' % (card_attempt + 1, draft_name))
-                res = self.click_card_by_name(draft_name)
-                if not res.get('ok'):
-                    log('  findcard 失败: %s' % res.get('err'))
-                    time.sleep(1); continue
-                if self.wait_editor_ready(base_show, timeout=12) and self._editor_usable():
-                    opened = True; break
-                log('  草稿未打开(或编辑器未就绪), 重试')
-                time.sleep(1)
+            for card_name in card_names:
+                for card_attempt in range(8):
+                    base_show = self.get_shown_count()
+                    log('点草稿卡片(尝试%d) — findcard 按名定位 %s' % (card_attempt + 1, card_name))
+                    res = self.click_card_by_name(card_name)
+                    if not res.get('ok'):
+                        log('  findcard 失败: %s' % res.get('err'))
+                        time.sleep(1); continue
+                    if self.wait_editor_ready(base_show, timeout=12) and self._editor_usable():
+                        opened = True; break
+                    log('  草稿未打开(或编辑器未就绪), 重试')
+                    time.sleep(1)
+                if opened:
+                    if card_name == STAND_IN_NAME:
+                        log('P3.6 替身卡打开成功 (内容=任务草稿 %s)' % draft_name)
+                        break
+                elif card_name == STAND_IN_NAME:
+                    log('P3.6 替身卡 8 次未打开, 回退点任务卡 %s' % draft_name)
+                else:
+                    break
             if not opened:
                 log('草稿卡片8次未打开, 中止')
                 capture_failure_screen('card_fail')  # 诊断: 看首页真实状态 (幽灵卡/横幅/列表未刷新)

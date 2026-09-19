@@ -101,6 +101,9 @@ VIDEOS_DIR = os.environ.get('VIDEOS_DIR', os.path.join(USERPROFILE, 'Videos'))
 # P3 导出模式: 'api' = 点一次导出按钮, hook 补丁 exportStart 输出路径直写成片
 # (不点确认/完成弹窗, 失败自动回退传统点击链); 'ui' = 强制传统点击链.
 RENDER_EXPORT_MODE = os.environ.get('RENDER_EXPORT_MODE', 'api')
+# P3.6 替身卡: 固定替身草稿卡 (p3_stand_in) 的内容文件每渲染前覆写为任务草稿,
+# 只点替身卡 (点卡片时 app 重新读磁盘内容, P1b trace 实锤). 0=回退逐次注入+点任务卡.
+RENDER_DRAFT_SWAP = os.environ.get('RENDER_DRAFT_SWAP', '1')
 
 # ============================================================ 工作目录
 UPLOAD_DIR = os.environ.get('UPLOAD_DIR', os.path.join(HERE, 'render_uploads'))
