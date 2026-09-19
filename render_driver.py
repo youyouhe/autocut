@@ -1828,8 +1828,25 @@ class Driver:
             time.sleep(1)
             log('点关闭完成提示(modal)'); self.click_modal_button(['完成', '关闭', '确定'], caps['close_done']['lx'], caps['close_done']['ly'])
             time.sleep(1.5)
-        log('点关闭编辑器(回首页)'); self.close_editor(caps)
-        time.sleep(2)
+        # P4 常驻会话: 必须验证编辑器真关了 (导出按钮消失), 否则下个任务
+        # 点替身卡时编辑器在前台挡着, "无新窗口"连续失败 (2026-09-20 P4 首跑实锤).
+        for close_try in range(3):
+            log('点关闭编辑器(回首页) (第%d次)' % (close_try + 1))
+            self.close_editor(caps)
+            time.sleep(2)
+            editor_gone = True
+            try:
+                if self.script.exports_sync.findmainbutton(
+                        json.dumps(['导出'], ensure_ascii=False)).get('ok'):
+                    editor_gone = False
+            except Exception:
+                pass
+            if editor_gone:
+                log('  ✓ 编辑器已关闭 (导出按钮消失)')
+                break
+            log('  ⚠ 编辑器未关闭, 重试')
+        else:
+            log('  ⚠ 编辑器 3 次未关闭, 本会话标记重建')
 
         # 5. 注入草稿的清理不在此时做 — 剪映还开着, 编辑器句柄会让 rmtree 静默半失败
         #    (留空壳文件夹, 实测 2 天积 14 个). 登记给 main() 的 finally, 杀完剪映再删.
@@ -1958,6 +1975,10 @@ def main():
                 except Exception as e:
                     print('WORKER_RESULT ' + json.dumps(
                         {'ok': False, 'error': repr(e)}), flush=True)
+                if not ok:
+                    # 会话状态可疑 (如编辑器关不干净) → 下个任务强制重建会话
+                    log('P4 worker: 任务失败, 会话标记重建')
+                    alive = False
                 # scratch 任务文件夹清理 (引擎句柄已随编辑器关闭释放; 失败留给下次)
                 try:
                     import shutil as _sh
