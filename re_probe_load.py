@@ -28,6 +28,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('draft_dir')
     ap.add_argument('--timeout', type=int, default=1800)
+    ap.add_argument('--js', default=TRACE_JS, help='hook JS 路径 (可换 hook_invoke_trace.js 等)')
     args = ap.parse_args()
     if not os.path.isdir(args.draft_dir):
         log('草稿目录不存在: %s' % args.draft_dir)
@@ -106,7 +107,7 @@ def main():
                             log('符号命中=%s 缺失=%s' % (p['found'], p['missing']))
                         elif t == 'ready':
                             log('装载链 hook 就位 (PID 分支)')
-                        elif t == 'load':
+                        elif t in ('load', 'invoke'):
                             seq[0] += 1
                             jsonl.write(json.dumps(p, ensure_ascii=False) + '\n')
                             jsonl.flush()
