@@ -1845,6 +1845,19 @@ class Driver:
                 log('  ✓ 编辑器已关闭 (导出按钮消失)')
                 break
             log('  ⚠ 编辑器未关闭, 重试')
+            # 诊断: dump 前台窗口顶条节点 (找真正的返回按钮)
+            try:
+                st = self.script.exports_sync.status()
+                win = st.get('curWin')
+                if win:
+                    nodes = self.script.exports_sync.dumptree(win, 14, 800)
+                    strip = [n for n in nodes if isinstance(n.get('ay'), (int, float))
+                             and n.get('ay', 999) <= 60 and n.get('w', 0) > 2]
+                    strip.sort(key=lambda n: (n.get('ay', 0), n.get('ax', 0)))
+                    log('顶条节点(%d): %s' % (len(strip), json.dumps(
+                        strip[:40], ensure_ascii=False)))
+            except Exception as e:
+                log('顶条 dump 失败: %r' % e)
         else:
             log('  ⚠ 编辑器 3 次未关闭, 本会话标记重建')
 
