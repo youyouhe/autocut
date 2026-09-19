@@ -717,6 +717,23 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "check_draft",
+            "description": "代码级核对草稿是否可以放心渲染:检测 video/audio 轨内片段重叠、主视频轨黑屏空隙(开头/中间/结尾)、"
+                           "字幕/文字轨覆盖率不足(写了一部分就断掉)——这些是肉眼读 get_draft_timeline 容易漏看的问题, 也是历次"
+                           "'工具报成功但没真落进草稿'事故的检测点。用户要求'渲染/导出/出片'前必须先调用它做最终核对(铁律6), "
+                           "不要只凭肉眼比对条数。返回 ok/errors/warnings: errors 非空必须先修复(补齐/重做)再渲染, 绝不带着 errors 渲染; "
+                           "warnings 是可疑但不阻断的信号(如结尾有意黑场), 结合上下文判断是否需要处理。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "draft_id": {"type": "string", "description": "目标草稿 id（可选）。不传=用当前激活草稿。"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_templates",
             "description": "列出可用的视频模板及每个模板需要填的变量名。用户想用模板快速做视频时先调用这个看有什么模板。",
             "parameters": {"type": "object", "properties": {}}
@@ -1616,6 +1633,24 @@ def execute_tool(name, args, ctx):
                              'start_s': t['segments'][0]['start_s'] if t['segments'] else None,
                              'end_s': t['segments'][-1]['end_s'] if t['segments'] else None}
                             for t in tracks_out]
+
+    elif name == 'check_draft':
+        did = args.get('draft_id') or draft_id
+        if not did:
+            result = {'error': '当前无激活草稿。先 create_draft 新建或让用户在 Drafts 打开一个草稿。'}
+        else:
+            r = rs._get_internal(f'api/draft/timeline/{did}', user_id=ctx.uid)
+            if not isinstance(r, dict) or not r.get('success'):
+                result = {'error': (r.get('error') if isinstance(r, dict) else None) or '读取草稿时间线失败'}
+            else:
+                try:
+                    content = json.loads(r['output'])
+                except Exception as e:
+                    result = {'error': f'解析草稿 json 失败: {e}'}
+                else:
+                    from draft_validate import validate_draft_content
+                    ok, errors, warnings = validate_draft_content(content)
+                    result = {'ok': ok, 'errors': errors, 'warnings': warnings}
 
     elif name == 'list_templates':
         r = rs._get_internal('api/templates')

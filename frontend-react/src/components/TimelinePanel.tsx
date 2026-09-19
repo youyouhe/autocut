@@ -260,24 +260,34 @@ function VideoPreviewPopup({ seg, x, y, fmtSec }: {
   return (
     <div className="fixed z-40 pointer-events-none shadow-2xl border border-[#121212]/30 bg-[#121212]"
       style={{ left, top, width: W }}>
-      <video
-        ref={ref}
-        src={api.serveUrl(seg.material_path!)}
-        muted
-        autoPlay
-        playsInline
-        loop
-        preload="auto"
-        className="block w-full"
-        style={{ height: H, objectFit: 'contain', background: '#000' }}
-        onLoadedMetadata={() => {
-          const v = ref.current;
-          if (v) {
-            try { v.currentTime = Math.min(startSec, Math.max((v.duration || 0) - 0.1, 0)); } catch { /* ignore seek */ }
-            v.play().catch(() => { /* 自动播放被拒, 静音通常允许 */ });
-          }
-        }}
-      />
+      {seg.is_image ? (
+        // 图片素材(material_type='photo'): 静态图, 没有 duration/seek 概念, <video> 解码不了图片字节
+        <img
+          src={api.serveUrl(seg.material_path!)}
+          alt=""
+          className="block w-full"
+          style={{ height: H, objectFit: 'contain', background: '#000' }}
+        />
+      ) : (
+        <video
+          ref={ref}
+          src={api.serveUrl(seg.material_path!)}
+          muted
+          autoPlay
+          playsInline
+          loop
+          preload="auto"
+          className="block w-full"
+          style={{ height: H, objectFit: 'contain', background: '#000' }}
+          onLoadedMetadata={() => {
+            const v = ref.current;
+            if (v) {
+              try { v.currentTime = Math.min(startSec, Math.max((v.duration || 0) - 0.1, 0)); } catch { /* ignore seek */ }
+              v.play().catch(() => { /* 自动播放被拒, 静音通常允许 */ });
+            }
+          }}
+        />
+      )}
       <div className="px-3 py-2 flex items-center justify-between gap-2 text-[#FDFCF8]">
         <span className="text-[9px] uppercase tracking-widest font-bold truncate opacity-80">
           {seg.material_name || 'video'}
@@ -322,7 +332,10 @@ function TrackRow({ track, matIndex, pxPerSec, fmtSec, onHover, onPreviewOpen, o
           const width = Math.max((tr.duration / 1e6) * pxPerSec, 4);
           const mat = matIndex[seg.material_id] || {};
           // 剪映 video/audio 素材: 磁盘 draft 里 path 常为空, 真实路径在 media_path (绝对路径, 可直接 serve)
-          const path = mat.path || mat.media_path;
+          // image 素材(add_image, material_type='photo'): path/media_path 都是空串, 真实本地路径落在
+          // remote_url 里(add_image_impl 用它存本地图片路径, 不一定是真的远程 url) —— 不 fallback 到这个
+          // 字段的话缩略图/hover预览的 path 恒为空串, 图像段永远显示纯色块+文件名, 缩略图无法预览
+          const path = mat.path || mat.media_path || mat.remote_url;
           // 文本素材: content 是 {"styles":[...],"text":"实际文字"} 的 JSON, 退化取 mat.text
           const text = extractText(mat.content, mat.text);
           const segFull: TimelineSegment = {
@@ -331,6 +344,7 @@ function TrackRow({ track, matIndex, pxPerSec, fmtSec, onHover, onPreviewOpen, o
             material_path: path,
             material_name: mat.material_name || mat.name,
             text_content: text,
+            is_image: mat.type === 'photo',  // 导出 json 的字段名是 type, 不是 material_type (Video_material.export_json)
           };
           const isVideo = track.type === 'video';
           return (
@@ -343,7 +357,7 @@ function TrackRow({ track, matIndex, pxPerSec, fmtSec, onHover, onPreviewOpen, o
               title={`${track.type}`}>
               {track.type === 'video' && path ? (
                 <>
-                  <img src={api.serveUrl(path)} alt="" className="absolute inset-0 w-full h-full object-cover opacity-80" />
+                  <img src={api.thumbnailUrl(path)} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover opacity-80" />
                   <div className="absolute inset-0 bg-black/30" />
                   <span className="absolute bottom-0.5 left-1 text-[9px] text-white font-mono">{fmtSec(tr.duration)}</span>
                 </>

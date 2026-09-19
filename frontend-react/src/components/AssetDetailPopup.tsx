@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { X, Play } from 'lucide-react';
+import { X, Play, GripVertical } from 'lucide-react';
 import type { Asset, PerceiveResult, Shot } from '../api';
 
 function getVisualJson(a: PerceiveResult | null | undefined) {
@@ -28,32 +28,102 @@ interface Props {
  * 让用户翻页. 内容 = 分镜网格 + 分析块, 与原 AssetPanel 下方输出一致.
  * 实时: asset / shots 由 AssetPanel 从 props 透传, 后台分析结果回填 setAssets 后
  * 本组件拿到的就是最新 analysis —— 无需额外刷新.
+ *
+ * 可拖动: 标题栏就是拖动柄 (pointer capture), 拖动全程把窗口夹在视口内, 保证不甩丢;
+ * 用户一旦手动拖过就停用自动定位, 位置完全交给用户.
+ * 打开时还会按内容真实高度自动把 top 上移夹进视口 —— 修复内容超高时底部被裁"显示不全".
  */
 export default function AssetDetailPopup({ asset, shots, anchor, onClose }: Props) {
   const popRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  const GAP = 12;
+
+  // 用户手动拖过 → 停止自动追位, 避免自动夹取跟用户抢位置.
+  const autoPlaced = useRef(false);
+  // 拖动会话基线: pointerdown 时记录的起点 + 初始矩形.
+  const dragRef = useRef<{ x: number; y: number; left: number; top: number; width: number; height: number } | null>(null);
 
   const analysis = asset.analysis as PerceiveResult | { error?: string } | null | undefined;
   const vj = analysis && !('error' in analysis) ? getVisualJson(analysis as PerceiveResult) : {};
   const vFallback = analysis && !('error' in analysis) ? getVisualFallback(analysis as PerceiveResult) : '';
   const audioText = analysis && !('error' in analysis) ? (analysis as PerceiveResult).audio?.full_text : '';
 
-  // 锚点定位 + 视口夹取: 优先放卡片右侧, 右侧放不下放左侧; 上下做 min/max 夹取不溢出视口.
+  // 阶段一 — 锚点定位: 优先放卡片右侧, 右侧放不下放左侧. top 先用卡片位置粗估
+  // (内容真实高度此时未知), 待元素量出高度后由阶段二按实际高度精修.
   useLayoutEffect(() => {
     if (!anchor) return;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const gap = 12;
-    const width = Math.min(440, vw - gap * 2);
-    // 先估算高度上限, 实际由内容撑开 + max-h 控制
-    const placeRight = anchor.right + gap + width <= vw;
+    const width = Math.min(440, vw - GAP * 2);
+    const placeRight = anchor.right + GAP + width <= vw;
     const left = placeRight
-      ? anchor.right + gap
-      : Math.max(gap, anchor.left - gap - width);
-    // 垂直: 顶部对齐卡片顶, 但不超出视口
-    const top = Math.max(gap, Math.min(anchor.top, vh - gap - 320));
+      ? anchor.right + GAP
+      : Math.max(GAP, anchor.left - GAP - width);
+    // 垂直: 顶部对齐卡片顶, 先粗夹在视口内(留 320 给下方内容), 量出真实高度后再精修
+    const top = Math.max(GAP, Math.min(anchor.top, vh - GAP - 320));
+    autoPlaced.current = false;   // 每次重新布置(换素材/重开)都重新允许自动夹取
     setPos({ left, top, width });
   }, [anchor]);
+
+  // 阶段二 — 按真实内容高度精修 top: 弹窗底若超出视口(内容超高)就整体上移, 根治"显示不全".
+  // ResizeObserver: 打开即量一次; 之后内容长高(如分析/镜头结果回填)也会自动再夹一次.
+  // 用户手动拖过(autoPlaced)就停手, 位置完全交给用户.
+  useLayoutEffect(() => {
+    if (!pos) return;
+    const el = popRef.current;
+    if (!el) return;
+    const fit = () => {
+      if (autoPlaced.current) return;
+      const vh = window.innerHeight;
+      const h = el.offsetHeight;
+      const maxTop = vh - GAP - h;
+      setPos(p => {
+        if (!p) return p;
+        const top = Math.max(GAP, Math.min(p.top, maxTop));
+        return Math.abs(top - p.top) > 0.5 ? { ...p, top } : p;
+      });
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [pos]);
+
+  // ===== 拖动 (标题栏 pointer capture) =====
+  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = popRef.current;
+    if (!el || !pos) return;
+    e.preventDefault();
+    // 捕获必须放在持有 onPointerMove 的标题栏上: 捕获后后续事件全部派发给它, 指针移出标题/窗口也能继续拖.
+    e.currentTarget.setPointerCapture(e.pointerId);
+    autoPlaced.current = true;    // 一拖即放弃自动定位
+    const r = el.getBoundingClientRect();
+    dragRef.current = { x: e.clientX, y: e.clientY, left: r.left, top: r.top, width: r.width, height: r.height };
+  };
+
+  const onDragMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragRef.current;
+    if (!st) return;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rawLeft = st.left + (e.clientX - st.x);
+    const rawTop = st.top + (e.clientY - st.y);
+    // 全程夹取在视口内: 窗口再大也留边可抓, 不会拖丢或再次"显示不全"
+    const left = Math.min(Math.max(rawLeft, GAP), Math.max(GAP, vw - GAP - st.width));
+    const maxTop = vh - GAP - st.height;
+    const top = Math.min(Math.max(rawTop, GAP), Math.max(GAP, maxTop));
+    setPos(p => (p ? { ...p, left, top } : p));
+  };
+
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* 已释放 */ }
+  };
+
+  // 捕获被系统夺走(如浏览器弹窗/异常)时清理拖动会话, 避免卡在拖态.
+  const onLostPointerCapture = () => { dragRef.current = null; };
 
   // Escape 关闭
   useEffect(() => {
@@ -77,10 +147,22 @@ export default function AssetDetailPopup({ asset, shots, anchor, onClose }: Prop
         style={{ left: pos.left, top: pos.top, width: pos.width, maxHeight: '80vh' }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* 标题栏 */}
-        <div className="flex items-center justify-between border-b border-[#121212]/10 px-5 py-3 bg-[#121212]/3">
-          <div className="font-serif italic text-lg truncate pr-3" title={asset.name}>{asset.name}</div>
-          <button onClick={onClose} className="opacity-50 hover:opacity-100 transition-opacity flex-shrink-0" title="关闭 (Esc)">
+        {/* 标题栏 = 拖动柄: 按住任意处拖动整个弹窗; 自动夹取保证内容超高也不裁 */}
+        <div
+          onPointerDown={startDrag}
+          onPointerMove={onDragMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          onLostPointerCapture={onLostPointerCapture}
+          className="flex items-center justify-between border-b border-[#121212]/10 px-5 py-3 bg-[#121212]/3 cursor-grab active:cursor-grabbing select-none touch-none"
+          title="按住标题栏拖动位置 · Esc 关闭"
+        >
+          <div className="flex items-center min-w-0 flex-1">
+            <GripVertical size={14} strokeWidth={1.5} className="opacity-30 mr-2 flex-shrink-0" aria-hidden />
+            <div className="font-serif italic text-lg truncate" title={asset.name}>{asset.name}</div>
+          </div>
+          <button onClick={onClose} onPointerDown={(e) => e.stopPropagation()}
+            className="opacity-50 hover:opacity-100 transition-opacity flex-shrink-0 ml-3" title="关闭 (Esc)">
             <X size={18} strokeWidth={1.5} />
           </button>
         </div>

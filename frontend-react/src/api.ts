@@ -330,6 +330,7 @@ export interface TimelineSegment {
   // 视频/音频素材特有
   material_path?: string;         // 用于 serveUrl 取缩略图
   material_name?: string;
+  is_image?: boolean;             // material_type === 'photo' (add_image 加的图片段, 落在 video 轨上但不是视频)
 }
 
 export interface TimelineTrack {

@@ -273,6 +273,15 @@ def step_templates():
                  os.path.join(DIST, 'README.md'))
     log('拷入模板 (config.env / start.bat / calibrate.bat / stop.bat / fix_update.bat / start_here.html / README.md) [.bat 转GBK+去chcp]')
 
+    # 占位草稿 (新机器剪映首页空的, 校准第一步"点草稿卡片"无卡可点; render_driver.py
+    # calibrate 会自动注入这个自包含草稿(纯文字片段, 无外部素材依赖)提供可点的卡片).
+    default_draft_src = os.path.join(ASSETS, 'default_draft')
+    default_draft_dst = os.path.join(DIST, 'app', 'default_draft')
+    if os.path.exists(default_draft_dst):
+        shutil.rmtree(default_draft_dst)
+    shutil.copytree(default_draft_src, default_draft_dst)
+    log('拷入占位草稿 -> app/default_draft/ (校准用)')
+
 
 def step_capcut_installer():
     """校验剪映官方安装器, 拷入 capcut-installer/.

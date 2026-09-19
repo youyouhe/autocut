@@ -31,6 +31,10 @@ MONITOR_LOG = os.path.join(SCRIPT_DIR, 'render_monitor.log')
 MONITOR_PY  = os.path.join(SCRIPT_DIR, 'render_monitor.py')
 # 剪映草稿根目录 (剪映实时监视此目录, 放草稿文件夹进去会自动识别)
 DRAFT_ROOT  = config.DRAFT_ROOT
+# 校准占位草稿 (新机器剪映首页空的, calibrate 第一步"点草稿卡片"无卡可点; 自包含
+# 纯文字片段, 无外部素材依赖). 打包时随 build.py 拷进 app/default_draft/; 不存在则跳过注入.
+DEFAULT_DRAFT_DIR = os.path.join(SCRIPT_DIR, 'default_draft')
+CALIB_PLACEHOLDER_NAME = 'calib_placeholder'
 
 _LOGF = None  # 本次运行的完整日志文件 (logs/run_*.log, 服务error字段只存尾部800字不够排障)
 
@@ -1161,10 +1165,13 @@ class Driver:
             except: pass
             self.monitor_proc = None
 
-    def wait_render_done(self, draft_name=None, timeout=300):
+    def wait_render_done(self, draft_name=None, timeout=300, min_size=100000):
         """等目标 mp4 生成. draft_name 给定则按 <draft_name>*.mp4 前缀匹配;
         draft_name 为 None 则等任意新出现的 mp4 (mtime 晚于调用前, 用于 calibrate/run).
-        判断: mp4 出现 + 大小稳定 (>100KB 且 ~3s 不变) = 完成."""
+        判断: mp4 出现 + 大小稳定 (>min_size 且 ~3s 不变) = 完成.
+        min_size: 排除"空壳"(导出刚开始时的占位/临时文件)的字节数下限, 默认按真实
+        用户草稿的量级给 100KB; calibrate 注入的占位草稿只有几秒纯文字, 导出产物
+        远小于 100KB, 调用处应传更小的值, 否则永远判不出"完成", 白等到超时."""
         VIDEOS = config.VIDEOS_DIR
         TEMP = os.path.join(VIDEOS, '.__jianying_export_temp_folder__')
         log('等待 %s*.mp4 生成 (最多 %ds)...' % (draft_name or '*', timeout))
@@ -1200,7 +1207,7 @@ class Driver:
                 files.sort(key=lambda f: os.path.getmtime(os.path.join(VIDEOS, f)), reverse=True)
                 p = os.path.join(VIDEOS, files[0])
                 sz = os.path.getsize(p)
-                if sz > 100000:  # >100KB 才算 (排除空壳)
+                if sz > min_size:
                     if sz == last_size:
                         stable_count += 1
                     else:
@@ -1340,7 +1347,9 @@ class Driver:
                 elif key == 'export':
                     time.sleep(3)   # 点导出后等导出窗口弹出
                 elif key == 'confirm':
-                    self.wait_render_done(timeout=600)  # 等渲染完成
+                    # 占位草稿只有 5s 纯文字, 导出产物远小于生产草稿的量级,
+                    # min_size 用默认 100KB 会永远判不出"完成", 白等到 600s 超时.
+                    self.wait_render_done(timeout=600, min_size=1000)  # 等渲染完成
                 elif key == 'close_done':
                     time.sleep(2)   # 等完成窗口关闭
                 elif key == 'close_editor':
@@ -1613,6 +1622,13 @@ def main():
             except: pass
         if a == '--desktop-name' and i + 1 < len(sys.argv):
             desk_name = sys.argv[i + 1]
+
+    # calibrate 前置注入占位草稿 (在剪映启动前落位, 保证首次首页扫描就能扫到 —
+    # 运行中注入依赖目录监视, 实测间歇性失效, 见 inject_draft 调用处注释).
+    if mode == 'calibrate' and os.path.isdir(DEFAULT_DRAFT_DIR):
+        log('注入占位草稿供校准点击 (%s)...' % CALIB_PLACEHOLDER_NAME)
+        inject_draft(DEFAULT_DRAFT_DIR, CALIB_PLACEHOLDER_NAME)
+
     if desktop_mode:
         DESKTOP_MODE = True
         if attach_pid is None:
@@ -1660,7 +1676,11 @@ def main():
             sys.exit(1)
         d.start_monitor()
         if mode == 'calibrate':
-            ok = d.calibrate()
+            try:
+                ok = d.calibrate()
+            finally:
+                if os.path.isdir(DEFAULT_DRAFT_DIR):
+                    _cleanup_injected_draft(CALIB_PLACEHOLDER_NAME)
             sys.exit(0 if ok else 2)
         elif mode == 'run':
             cnt = int(sys.argv[2]) if (len(sys.argv) > 2 and sys.argv[2].isdigit()) else 1

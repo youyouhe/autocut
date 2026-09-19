@@ -80,6 +80,7 @@ yarn-error.log*
 
 # VectCut dynamic drafts
 VectCutAPI/dfd_*
+VectCutAPI/*_dfd_*
 
 # OS / Editor
 .DS_Store

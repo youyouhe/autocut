@@ -6,9 +6,11 @@
  * 这是 per-user 用户自助, 非 admin 也能配. 仿 SettingsPanel 的表单样式.
  */
 import { useState, useEffect } from 'react';
-import { Server, Loader2, CheckCircle2, XCircle, Save, Zap } from 'lucide-react';
+import { Server, Loader2, CheckCircle2, XCircle, Save, Zap, Download } from 'lucide-react';
 import * as api from '../api';
 import type { RenderConfig, RenderConfigTestResult } from '../api';
+
+const RENDER_NODE_PACKAGE_URL = '/downloads/autocut-render-node-portable.zip';
 
 export default function RenderNodePanel() {
   const [loading, setLoading] = useState(true);
@@ -97,9 +99,45 @@ export default function RenderNodePanel() {
         <div className="flex-1 flex items-center justify-center"><Loader2 className="animate-spin" size={28} strokeWidth={1.5} /></div>
       ) : (
         <div className="max-w-2xl space-y-8">
+          {/* 第一步: 安装到本机 */}
+          <div className="border border-[#121212]/10 p-8">
+            <h3 className="font-serif italic text-2xl mb-2">第一步 · 安装到你的 Windows 电脑</h3>
+            <p className="text-xs opacity-60 mb-6">
+              渲染节点跑在你自己的 Windows 10 电脑上,负责本地调用剪映客户端完成渲染。
+              安装包免安装依赖(自带 Python 运行环境),压缩包体积较大,建议在网络较好时下载。
+            </p>
+
+            <a
+              href={RENDER_NODE_PACKAGE_URL}
+              download
+              className="inline-flex items-center gap-2 px-5 py-2.5 border border-[#121212] bg-[#121212] hover:bg-transparent text-[#FDFCF8] hover:text-[#121212] transition-colors text-[10px] uppercase tracking-widest font-bold mb-6"
+            >
+              <Download size={14} strokeWidth={2} />
+              下载渲染节点安装包
+            </a>
+
+            <ol className="space-y-3 text-xs opacity-70 list-decimal list-inside">
+              <li>下载并解压 zip 到任意目录</li>
+              <li>
+                双击解压出来的 <code className="font-mono bg-[#121212]/5 px-1">start_here.html</code> 按提示操作,
+                或直接运行 <code className="font-mono bg-[#121212]/5 px-1">start_render_service.bat</code> 启动
+              </li>
+              <li>
+                打开同目录下的 <code className="font-mono bg-[#121212]/5 px-1">config.env</code>,
+                给 <code className="font-mono bg-[#121212]/5 px-1">RENDER_SERVICE_TOKEN</code> 设置一个你自己的随机字符串
+                (强烈建议,否则任何能访问这台电脑局域网的人都能调用渲染)
+              </li>
+              <li>
+                把这台电脑的局域网 IP(如 <code className="font-mono bg-[#121212]/5 px-1">192.168.x.x</code>)、端口(默认 9020)
+                和上一步设的 token,填到下方"我的节点"表单里保存
+              </li>
+            </ol>
+          </div>
+
+          {/* 第二步: 连接节点 */}
           <div className="border border-[#121212]/10 p-8">
             <div className="flex items-center justify-between mb-6">
-              <h3 className="font-serif italic text-2xl">我的节点</h3>
+              <h3 className="font-serif italic text-2xl">第二步 · 我的节点</h3>
               <button onClick={handleTest} disabled={testing || !url.trim()}
                 className="flex items-center gap-2 px-4 py-2 border border-[#121212]/20 hover:bg-[#121212]/5 transition-colors disabled:opacity-50 text-[10px] uppercase tracking-widest font-bold">
                 {testing ? <Loader2 size={13} strokeWidth={2} className="animate-spin" /> : <Zap size={13} strokeWidth={2} />}
