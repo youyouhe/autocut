@@ -18,8 +18,10 @@ var DUMP_CAP = 4 * 1024 * 1024;   // 单次 dump 上限 4MB (上次实测 288KB 
 var PAGE = 4096;
 
 function modOff(addr) {
-    var m = Process.findModuleByAddr(addr);
-    return m ? (m.name + '+0x' + addr.sub(m.base).toString(16)) : addr.toString();
+    var m = null;
+    try { m = Process.findModuleByAddress(addr); }  // 注意: 全名是 ByAddress, 不是 ByAddr
+    catch (e) { /* 老版本兜底 */ try { m = Process.findModuleByAddr(addr); } catch (e2) {} }
+    return m ? (m.name + '+0x' + addr.sub(m.base).toString(16)) : ('' + addr);
 }
 
 function backtrace(ctx) {
@@ -86,23 +88,22 @@ function installHooks() {
         Interceptor.attach(addr, {
             onEnter: function (args) {
                 var id = ++seq;
-                var meta = {
-                    t: 'end', id: id, api: name, tid: Process.getCurrentThreadId(),
-                    ret: modOff(this.returnAddress), stack: backtrace(this.context),
-                    reqPtr: 'null'
-                };
+                function fail(step, e) {
+                    send({ t: 'hookerr', id: id, api: name, step: step, msg: '' + e,
+                           stack: (e && e.stack) ? ('' + e.stack) : null });
+                }
+                var meta = { t: 'end', id: id, api: name, reqPtr: 'null' };
+                try { meta.tid = Process.getCurrentThreadId(); } catch (e) { fail('tid', e); }
+                try { meta.ret = modOff(this.returnAddress); } catch (e) { fail('ret', e); }
+                try { meta.stack = backtrace(this.context); } catch (e) { fail('bt', e); }
                 try {
-                    var sp = args[0];                 // → shared_ptr 16字节块
-                    var req = sp.readPointer();       // ReqStruct*
+                    var req = args[0].readPointer();   // shared_ptr 按值 → RCX 指向 {ReqStruct*, ctrl}
                     meta.reqPtr = req.toString();
                     if (!req.isNull()) {
-                        var bytes = streamDump(id, req);
-                        meta.bytes = bytes;
-                    } else {
-                        meta.bytes = 0;
-                    }
+                        meta.bytes = streamDump(id, req);
+                    } else { meta.bytes = 0; }
                 } catch (e) {
-                    meta.err = 'req-read: ' + e;
+                    fail('req', e);
                     meta.bytes = 0;
                 }
                 try { meta.sid = args[3].toInt32(); } catch (e) { /* 无尾参的 API */ }

@@ -63,10 +63,16 @@ class TraceCollector:
     def on_message(self, message, data):
         if message['type'] != 'send':
             if message['type'] == 'error':
-                log('JS 错误: %s' % message.get('description'))
+                log('JS 异常: %s | stack: %s' % (
+                    message.get('description'), message.get('stack')))
             return
         p = message['payload']
         t = p.get('t')
+        if t == 'hookerr':
+            log('HOOK 分步错误 id=%s api=%s step=%s: %s\n  stack: %s' % (
+                p.get('id'), p.get('api'), p.get('step'), p.get('msg'),
+                p.get('stack')))
+            return
         if t == 'symbols':
             log('符号定位: 命中=%s 缺失=%s' % (p['found'], p['missing']))
         elif t == 'ready':
