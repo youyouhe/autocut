@@ -49,6 +49,11 @@ def _get_script(draft_id: str):
         cp = _os.path.join(here, draft_id, name)
         if _os.path.isfile(cp):
             script = _draft.Script_file.load_template(cp)
+            # 必须设 _cache_loaded_mtime, 否则 render_server._warmup_draft 后续拿不到基准时间戳,
+            # 会走"老缓存无时间戳→保守重载"分支, 无条件从磁盘重读并覆盖掉这次载入后产生的所有
+            # 未保存编辑 (add_subtitle/move_segment 等全靠这条缓存活着) —— 字幕轨落盘后又"凭空消失"
+            # 的案例根因就在这 (2026-09-12 实锤: 字幕悬挂/丢失, 复现路径见对话记录).
+            script._cache_loaded_mtime = _os.path.getmtime(cp)
             update_cache(draft_id, script)
             logger.info(f"冷草稿已从磁盘载入缓存: {draft_id} ({name})")
             return script

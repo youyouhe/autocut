@@ -532,6 +532,7 @@ function AssetCard({
 }: CardProps) {
   const [ref, inView] = useInView<HTMLDivElement>();
   const [hovering, setHovering] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const ANALYZABLE: AssetType[] = ['video', 'image'];
 
   return (
@@ -546,13 +547,19 @@ function AssetCard({
       <div className={`${asset._portrait ? 'h-72' : 'h-48'} border-b border-[#121212]/10 flex items-center justify-center relative bg-[#121212]`}
         onMouseEnter={asset.type === 'video' ? (e) => { setHovering(true); onHover(e, asset.path); }
           : asset.type === 'image' ? () => setHovering(true) : undefined}
-        onMouseLeave={asset.type === 'video' ? (e) => { setHovering(false); onLeave(e, asset.path); }
+        onMouseLeave={asset.type === 'video' ? (e) => {
+            // 卸载 <video> 前先显式 pause + 清空 src + load(): 靠 React 卸载让浏览器自己收连接不可靠,
+            // 缓冲中的请求可能一直挂着不断 (僵尸连接攒着占满 render_server 的 waitress 线程池).
+            const v = videoRef.current;
+            if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
+            setHovering(false); onLeave(e, asset.path);
+          }
           : asset.type === 'image' ? () => setHovering(false) : undefined}>
         {asset.type === 'video' ? (
           <>
             {/* 视口外: 仅占位图标, 零请求; 进入视口: 挂缩略图 jpg; hover: 换成 <video> 播放 */}
             {inView && hovering ? (
-              <video className={`absolute inset-0 w-full h-full ${asset._portrait ? 'object-contain' : 'object-cover'}`}
+              <video ref={videoRef} className={`absolute inset-0 w-full h-full ${asset._portrait ? 'object-contain' : 'object-cover'}`}
                 src={api.serveUrl(asset.path)} autoPlay muted={!soundOn} playsInline loop
                 onLoadedMetadata={(e) => onMeta(asset, e)} />
             ) : inView ? (
