@@ -1880,12 +1880,27 @@ def main():
         alive = False
         jy_pid = None
 
+        def _pid_alive(pid):
+            """进程句柄探活 (跨桌面窗口枚举不可靠, P4 首跑实锤: 任务间 find_main_pid
+            返回 None 导致误判剪映死亡 → 每任务重启, 常驻失效)."""
+            import ctypes
+            if not pid:
+                return False
+            h = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            if not h:
+                return False
+            r = ctypes.windll.kernel32.WaitForSingleObject(h, 0)
+            ctypes.windll.kernel32.CloseHandle(h)
+            return r == 0x102  # WAIT_TIMEOUT = 仍在运行
+
         def _ensure_session():
             nonlocal alive, jy_pid
             global CURRENT_HDESK   # 嵌套函数赋值必须显式 global, 否则模块级为空
                                    # → resize 跨桌面静默失败 → 点击 scale 错误全落空
-            if alive and find_main_pid():
+            if alive and _pid_alive(jy_pid):
                 return True
+            if alive:
+                log('P4 worker: 剪映进程已死 (PID=%s), 重建会话' % jy_pid)
             log('P4 worker: (重新)拉起剪映...')
             try: d.stop_monitor(); d.detach()
             except Exception: pass
