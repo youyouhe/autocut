@@ -79,6 +79,7 @@ def main():
         return [int(m.group(1)) for m in re.finditer(r'"JianyingPro\.exe","(\d+)"', out)]
 
     attached = set()
+    session = None
     deadline = time.time() + args.timeout
     while time.time() < deadline and proc.poll() is None:
         if session is None:
