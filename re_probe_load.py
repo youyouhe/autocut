@@ -68,48 +68,63 @@ def main():
 
     threading.Thread(target=_pump, daemon=True).start()
 
-    session = None
+    def find_jy_pids():
+        """tasklist 轮询 JianyingPro.exe — 进程出生即发现, 不等窗口 (跨桌面枚举不到窗口)."""
+        try:
+            out = subprocess.run(
+                ['tasklist', '/FI', 'IMAGENAME eq JianyingPro.exe', '/FO', 'CSV', '/NH'],
+                capture_output=True, text=True, timeout=10).stdout
+        except Exception:
+            return []
+        return [int(m.group(1)) for m in re.finditer(r'"JianyingPro\.exe","(\d+)"', out)]
+
+    attached = set()
     deadline = time.time() + args.timeout
     while time.time() < deadline and proc.poll() is None:
-        if driver_pid:
-            time.sleep(3)
-            try:
-                log('attach PID=%d, 挂装载链 trace...' % driver_pid[0])
-                session = frida.get_local_device().attach(driver_pid[0])
-                script = session.create_script(open(TRACE_JS, encoding='utf-8').read())
+        if session is None:
+            # 进程出生即 attach (卡片点击发生在启动后 ~33s, 必须抢先)
+            for pid in find_jy_pids():
+                if pid in attached:
+                    continue
+                attached.add(pid)
+                try:
+                    log('发现剪映进程 PID=%d, 立即 attach 挂装载链 trace...' % pid)
+                    s = frida.get_local_device().attach(pid)
+                    script = s.create_script(open(TRACE_JS, encoding='utf-8').read())
 
-                def on_msg(message, data):
-                    if message['type'] == 'error':
-                        log('JS 异常: %s | %s' % (message.get('description'),
-                                                  message.get('stack')))
-                        return
-                    if message['type'] != 'send':
-                        return
-                    p = message['payload']
-                    t = p.get('t')
-                    if t == 'symbols':
-                        log('符号命中=%s 缺失=%s' % (p['found'], p['missing']))
-                    elif t == 'ready':
-                        log('装载链 hook 就位')
-                    elif t == 'load':
-                        seq[0] += 1
-                        jsonl.write(json.dumps(p, ensure_ascii=False) + '\n')
-                        jsonl.flush()
-                        log('#%d %s (tid=%s ret=%s)' % (seq[0], p['api'],
-                                                        p.get('tid'), p.get('ret')))
-                        for k in ('str1', 'str2', 'deref1'):
-                            if p.get(k):
-                                log('    %s=%r' % (k, p[k][:180]))
-                        log('    栈: %s' % ' <- '.join(p.get('stack', [])[:6]))
-                script.on('message', on_msg)
-                script.load()
-                break
-            except Exception as e:
-                log('attach 失败: %r' % e)
-                session = None
-                time.sleep(5)
+                    def on_msg(message, data):
+                        if message['type'] == 'error':
+                            log('JS 异常: %s | %s' % (message.get('description'),
+                                                      message.get('stack')))
+                            return
+                        if message['type'] != 'send':
+                            return
+                        p = message['payload']
+                        t = p.get('t')
+                        if t == 'symbols':
+                            log('符号命中=%s 缺失=%s' % (p['found'], p['missing']))
+                        elif t == 'ready':
+                            log('装载链 hook 就位 (PID 分支)')
+                        elif t == 'load':
+                            seq[0] += 1
+                            jsonl.write(json.dumps(p, ensure_ascii=False) + '\n')
+                            jsonl.flush()
+                            log('#%d %s (tid=%s ret=%s)' % (seq[0], p['api'],
+                                                            p.get('tid'), p.get('ret')))
+                            for k in ('str1', 'str2', 'deref1'):
+                                if p.get(k):
+                                    log('    %s=%r' % (k, p[k][:180]))
+                            log('    栈: %s' % ' <- '.join(p.get('stack', [])[:6]))
+                    script.on('message', on_msg)
+                    script.load()
+                    session = s
+                    log('hook 已挂 (%d 个进程已 attach: %s)' % (len(attached), sorted(attached)))
+                    break
+                except Exception as e:
+                    log('attach PID=%d 失败: %r' % (pid, e))
+        if session is not None:
             break
-        time.sleep(2)
+        time.sleep(0.5)
 
     while proc.poll() is None and time.time() < deadline:
         time.sleep(2)
