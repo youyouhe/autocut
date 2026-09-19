@@ -255,23 +255,28 @@ function installHooks() {
                     meta.bytes = 0;
                 }
                 try { meta.sid = args[3].toInt32(); } catch (e) { /* 无尾参的 API */ }
-                // P2-A: 原位改写 +0x50 输出路径 (MSVC string: ptr@0 size@16 cap@24;
-                // 堆串才可原位改写 — 只覆盖 ≤cap 字节, 指针不动, 引擎照常 free)
+                // P2-A2: 只补丁静默预渲染请求 (+0x50 含 temp_folder), 放过 app 自身
+                // 的重试/正式导出请求 (路径直接在 Videos 下) — 判别"搬运源路径"
+                // 是引擎写盘路径还是 app 预先持有的副本.
                 if (PATCH_PATH && reqOK) {
                     try {
                         var strObj = req.add(0x50);
                         var osize = strObj.add(16).readU64().toNumber();
                         var ocap = strObj.add(24).readU64().toNumber();
                         meta.patched = { origSize: osize, cap: ocap };
-                        if (ocap > 15 && PATCH_PATH.length <= ocap) {
-                            var obuf = strObj.readPointer();
-                            meta.patched.from = obuf.readUtf8String(osize);
-                            obuf.writeUtf8String(PATCH_PATH);
+                        var opath = null;
+                        if (ocap > 15) {
+                            opath = strObj.readPointer().readUtf8String(osize);
+                            meta.patched.from = opath;
+                        }
+                        if (ocap > 15 && opath &&
+                            opath.indexOf('jianying_export_temp_folder') >= 0 &&
+                            PATCH_PATH.length <= ocap) {
+                            strObj.readPointer().writeUtf8String(PATCH_PATH);
                             strObj.add(16).writeU64(PATCH_PATH.length);
                             meta.patched.to = PATCH_PATH;
                         } else {
-                            meta.patched.err = ocap <= 15 ? 'SSO 内联串不可原位改写'
-                                                          : '新路径超长 cap=' + ocap;
+                            meta.patched.skipped = true;
                         }
                     } catch (e) { meta.patched = { err: '' + e }; }
                 }
