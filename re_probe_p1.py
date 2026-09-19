@@ -119,7 +119,7 @@ class TraceCollector:
         log('产出目录: %s (%d 个 dump)' % (self.outdir, len(self.metas)))
 
 
-def wait_jianying_pid(timeout=300):
+def wait_jianying_pid(timeout=300):  # noqa: 保留备用 (当前主流程改由驱动日志驱动 attach)
     """等 render_driver 子进程把剪映拉起来, 拿主进程 PID."""
     import render_driver as rd
     deadline = time.time() + timeout
@@ -167,30 +167,63 @@ def main():
                             stderr=subprocess.STDOUT,
                             text=True, encoding='utf-8', errors='replace')
 
-    # 等剪映起来 (桌面模式首启有 30s 首页加载, 预留足量), 再挂旁路 hook
-    pid = wait_jianying_pid()
-    collector = TraceCollector(outdir)
-    if not pid:
-        log('超时未等到剪映主进程, 渲染继续但无 dump')
-    else:
-        log('剪映 PID=%d, 挂旁路 trace hook...' % pid)
-        session = frida.get_local_device().attach(pid)
-        script = session.create_script(open(TRACE_JS, encoding='utf-8').read())
-        script.on('message', collector.on_message)
-        script.load()
+    # 实时转发驱动日志 (教训: 先等 PID 再转发会把 attach 失败等真实报错
+    # 扣在管道里, 用户面对 5 分钟黑屏无从判断 — 首轮侦察 18:33 栽在这).
+    driver_pid = []  # 捕获驱动自己 attach 成功的 PID
+    def _pump():
+        for line in proc.stdout:
+            sys.stdout.write('[drv] %s' % line)
+            sys.stdout.flush()
+            m = re.search(r'主进程 PID=(\d+)', line)
+            if m:
+                driver_pid.append(int(m.group(1)))
 
-    # 透传渲染日志 + 等子进程结束
+    import threading
+    t = threading.Thread(target=_pump, daemon=True)
+    t.start()
+
+    # 等驱动自己完成 attach (日志出现 '主进程 PID=' 后再缓 3s), 再挂旁路 hook.
+    # 两个 frida 会话同时往刚启动的进程里注入会互踩 — 首轮失败根因候选.
+    collector = TraceCollector(outdir)
+    deadline = time.time() + args.timeout
+    script = None
+    session = None
+    while time.time() < deadline and proc.poll() is None:
+        if driver_pid and driver_pid[0]:
+            time.sleep(3)
+            pid = driver_pid[0]
+            for attempt in range(3):
+                try:
+                    log('驱动已 attach (PID=%d), 挂旁路 trace hook (第 %d 次)...'
+                        % (pid, attempt + 1))
+                    session = frida.get_local_device().attach(pid)
+                    script = session.create_script(
+                        open(TRACE_JS, encoding='utf-8').read())
+                    collector = TraceCollector(outdir)
+                    script.on('message', collector.on_message)
+                    script.load()
+                    break
+                except Exception as e:
+                    log('旁路 attach 失败: %r' % e)
+                    session = None
+                    script = None
+                    time.sleep(5)
+            break
+        time.sleep(2)
+
+    if script is None and proc.poll() is None:
+        log('警告: 未能挂旁路 hook (驱动未报 attach 或连败), 渲染继续但无 dump')
+
     deadline = time.time() + args.timeout
     try:
-        for line in proc.stdout:
-            print(line, end='', flush=True)
-            if time.time() > deadline:
-                log('墙钟超时, 杀渲染子进程')
-                proc.kill()
-                break
-        proc.wait()
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(2)
+        if proc.poll() is None:
+            log('墙钟超时, 杀渲染子进程')
+            proc.kill()
     finally:
-        collector.finalize()
+        if script is not None:
+            collector.finalize()
         log('渲染子进程 exit=%s' % proc.returncode)
         n = len(collector.metas)
         if n:
@@ -198,7 +231,7 @@ def main():
             log('下一步: 把 re_probe_out 目录拷回 Linux, 在 Linux 上按参考地图对字段')
         else:
             log('P1 无捕获 — 检查: ①videoeditor.dll 是否挂钩成功(symbols 行) '
-                '②渲染是否真的走到导出')
+                '②渲染是否真的走到导出 ③上面 [drv] 行里驱动的真实报错')
         return 0 if n and proc.returncode == 0 else (0 if n else 1)
 
 
