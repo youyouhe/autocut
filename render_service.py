@@ -263,6 +263,94 @@ def _run_render_streaming(task_id, argv):
     return _stream_process(cmd, task_id)
 
 
+def _update_task_progress(task_id, line):
+    """[PROGRESS] 行 → 任务进度 (常驻 worker 流式解析用, 与 _stream_process 同语义)."""
+    data = _parse_progress_line(line)
+    if data is None:
+        return
+    with TASK_LOCK:
+        t = tasks.get(task_id)
+        if t is None:
+            return
+        t['progress'] = {'stage': data.get('stage'), 'pct': data.get('pct'),
+                         'elapsed': data.get('elapsed'),
+                         'temp_bytes': data.get('temp_bytes')}
+
+
+# ---- P4 常驻会话: render_driver worker 进程复用 (剪映跨任务不重启) ----
+PERSISTENT_SESSION = os.environ.get(
+    'RENDER_PERSISTENT_SESSION',
+    getattr(config, 'RENDER_PERSISTENT_SESSION', '1')) == '1'
+_WORKERS = {}   # desk -> {'proc': Popen}
+_WORKERS_LOCK = threading.Lock()
+
+
+def _kill_worker(desk):
+    with _WORKERS_LOCK:
+        w = _WORKERS.pop(desk, None)
+    if w and w['proc'].poll() is None:
+        try:
+            w['proc'].kill()
+        except Exception:
+            pass
+
+
+def _worker_render(task_id, desk, draft_dir, draft_name, timeout):
+    """向常驻 worker 发任务, 流式解析进度直到 WORKER_RESULT. 返回 (ok, tail).
+    worker 死亡/超时统一杀掉重建 (下次调用冷启动, 冷启动自带 kill+sweep 自愈)."""
+    with _WORKERS_LOCK:
+        w = _WORKERS.get(desk)
+        if w is None or w['proc'].poll() is not None:
+            if w is not None:
+                try:
+                    w['proc'].stdout.close()
+                except Exception:
+                    pass
+            cmd = [sys.executable, os.path.join(HERE, 'render_driver.py'),
+                   'worker', '--desktop-name', desk]
+            proc = subprocess.Popen(cmd, cwd=HERE, stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, encoding='utf-8', errors='replace',
+                                    bufsize=1)
+            w = _WORKERS[desk] = {'proc': proc}
+    proc = w['proc']
+    try:
+        proc.stdin.write(json.dumps({'op': 'render', 'draft_dir': draft_dir,
+                                     'draft_name': draft_name}) + '\n')
+        proc.stdin.flush()
+    except Exception as e:
+        _kill_worker(desk)
+        return False, 'worker stdin broken: %r' % e
+    out_tail = []
+    result = [None]
+
+    def _reader():
+        try:
+            for line in proc.stdout:
+                line = line.rstrip('\n')
+                if line.startswith('WORKER_RESULT '):
+                    try:
+                        result[0] = json.loads(line[len('WORKER_RESULT '):])
+                    except Exception:
+                        result[0] = {'ok': False, 'error': 'bad WORKER_RESULT'}
+                    return
+                out_tail.append(line)
+                _update_task_progress(task_id, line)
+        except Exception:
+            pass
+
+    th = threading.Thread(target=_reader, daemon=True)
+    th.start()
+    th.join(timeout=max(30, timeout))
+    if result[0] is None:
+        print('[render] worker 超时/死亡 (desk=%s), 杀掉重建' % desk, flush=True)
+        _kill_worker(desk)
+        return False, '\n'.join(out_tail)[-800:]
+    return bool(result[0].get('ok')), ('\n'.join(out_tail) +
+                                       ('\nworker: ' + json.dumps(result[0], ensure_ascii=False)
+                                        if not result[0].get('ok') else ''))[-800:]
+
+
 def render_pool_worker():
     """worker 线程: 取队列任务 → 获取桌面 → 渲染 (每次自己 start+kill 剪映).
     GUI 状态故障 (卡片找不到/弹窗不出现/编辑器未开) 自动重启剪映+清扫后重试 1 次 —
@@ -284,9 +372,16 @@ def render_pool_worker():
         _persist(task_id)
         try:
             t0 = time.time()
-            # render_driver 自己启动剪映到 desk 桌面, 渲染完 kill 自己的剪映
-            code, stdout_tail, stderr_tail = _run_render_streaming(
-                task_id, ['render-draft', draft_dir, '--desktop', '--desktop-name', desk])
+            if PERSISTENT_SESSION:
+                # P4 常驻 worker: 剪映跨任务复用 (首任务冷启动, 后续省 ~35s)
+                ok, tail = _worker_render(task_id, desk, draft_dir, draft_name,
+                                          timeout=config.RENDER_TIMEOUT)
+                code = 0 if ok else 1
+                stdout_tail, stderr_tail = tail, ''
+            else:
+                # render_driver 自己启动剪映到 desk 桌面, 渲染完 kill 自己的剪映
+                code, stdout_tail, stderr_tail = _run_render_streaming(
+                    task_id, ['render-draft', draft_dir, '--desktop', '--desktop-name', desk])
             dt = time.time() - t0
 
             # ---- GUI 状态故障自动重试 1 次 (重启剪映 + 幽灵清扫) ----
@@ -300,10 +395,17 @@ def render_pool_worker():
                     tasks[task_id]['_auto_retried'] = True
                     tasks[task_id]['error'] = None
                 _persist(task_id)
-                _restart_jianying_and_sweep()
                 t0b = time.time()
-                code, stdout_tail, stderr_tail = _run_render_streaming(
-                    task_id, ['render-draft', draft_dir, '--desktop', '--desktop-name', desk])
+                if PERSISTENT_SESSION:
+                    _kill_worker(desk)   # 冷启动 worker 自带 kill+sweep 自愈
+                    ok, tail = _worker_render(task_id, desk, draft_dir, draft_name,
+                                              timeout=config.RENDER_TIMEOUT)
+                    code = 0 if ok else 1
+                    stdout_tail, stderr_tail = tail, ''
+                else:
+                    _restart_jianying_and_sweep()
+                    code, stdout_tail, stderr_tail = _run_render_streaming(
+                        task_id, ['render-draft', draft_dir, '--desktop', '--desktop-name', desk])
                 dt += time.time() - t0b
 
             with TASK_LOCK:

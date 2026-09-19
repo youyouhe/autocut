@@ -104,6 +104,9 @@ RENDER_EXPORT_MODE = os.environ.get('RENDER_EXPORT_MODE', 'api')
 # P3.6 替身卡: 固定替身草稿卡 (p3_stand_in) 的内容文件每渲染前覆写为任务草稿,
 # 只点替身卡 (点卡片时 app 重新读磁盘内容, P1b trace 实锤). 0=回退逐次注入+点任务卡.
 RENDER_DRAFT_SWAP = os.environ.get('RENDER_DRAFT_SWAP', '1')
+# P4 常驻会话: render_service 维持一个 render_driver worker 进程, 剪映跨任务不重启
+# (首任务冷启动, 后续每任务省 ~35s). 0=每任务冷启旧模式. worker 崩溃/超时自动重建.
+RENDER_PERSISTENT_SESSION = os.environ.get('RENDER_PERSISTENT_SESSION', '1')
 
 # ============================================================ 工作目录
 UPLOAD_DIR = os.environ.get('UPLOAD_DIR', os.path.join(HERE, 'render_uploads'))

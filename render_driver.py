@@ -114,15 +114,17 @@ def _find_material_file(new_draft_dir, mname, remote_url=''):
     return best
 
 
-def inject_draft(src_draft_dir, new_name=None):
-    """复制源草稿文件夹到剪映草稿根目录, 改 id/名字/时间(排首页第一).
+def inject_draft(src_draft_dir, new_name=None, dest_root=None):
+    """复制源草稿文件夹到剪映草稿根目录(或 scratch_root), 改 id/名字/时间(排首页第一).
     剪映实时监视目录, 会自动识别新草稿. 返回新草稿文件夹路径;
-    素材回填后仍缺文件时返回 None (缺素材导出必被拒, 调用方应直接中止)."""
+    素材回填后仍缺文件时返回 None (缺素材导出必被拒, 调用方应直接中止).
+    dest_root: P4 常驻会话模式 — 任务草稿放 scratch 目录(不进草稿根, 不依赖首页
+    识别, 无需清理), 仅用于素材路径回填; 内容随后覆写进替身卡."""
     import shutil, uuid
     src = os.path.abspath(src_draft_dir)
     src_name = os.path.basename(src)
     new_name = new_name or (src_name + '_render')
-    dst = os.path.join(DRAFT_ROOT, new_name)
+    dst = os.path.join(dest_root or DRAFT_ROOT, new_name)
     # 若已存在先删
     if os.path.exists(dst):
         shutil.rmtree(dst, ignore_errors=True)
@@ -1579,15 +1581,15 @@ class Driver:
             pass
         return True
 
-    def _prepare_stand_in(self, draft_name):
+    def _prepare_stand_in(self, task_dir):
         """P3.6: 准备替身卡 — 任务草稿(已回填素材路径)的内容文件覆写到固定替身卡.
         点替身卡 = app 从磁盘加载任务内容 (P1b: 点卡片时重新读 draft_content.json).
         替身卡首次从任务草稿克隆 (跳过 assets 大文件), 之后每渲染只覆写 content 文件.
+        task_dir: 任务草稿文件夹路径 (草稿根或 scratch 均可, 素材路径已回填).
         成功返回替身卡名, 失败 None (调用方回退点任务卡片)."""
         import shutil
         try:
             stand_in = os.path.join(DRAFT_ROOT, STAND_IN_NAME)
-            task_dir = os.path.join(DRAFT_ROOT, draft_name)
             task_content = os.path.join(task_dir, 'draft_content.json')
             if not os.path.isfile(task_content):
                 return None
@@ -1612,12 +1614,15 @@ class Driver:
             log('P3.6 替身卡准备失败, 回退点任务卡: %r' % e)
             return None
 
-    def render_draft(self, src_draft_dir, draft_name=None, search_term=None, api_out=None):
+    def render_draft(self, src_draft_dir, draft_name=None, search_term=None, api_out=None,
+                     scratch_root=None):
         """渲染指定草稿: 注入(让剪映识别) → 搜索定位 → 打开 → 导出.
         draft_name: 注入后的草稿名 (默认 源名_render)
         search_term: 搜索关键词 (默认 = draft_name). 用唯一名字保证结果唯一.
         api_out: P3 api 导出模式的输出 mp4 全路径; None 时按 API_MODE 开关用
-                 VIDEOS/<draft_name>.mp4. api 失败自动回退传统 confirm 点击链."""
+                 VIDEOS/<draft_name>.mp4. api 失败自动回退传统 confirm 点击链.
+        scratch_root: P4 常驻会话 — 任务草稿注入到 scratch 目录 (不进草稿根, 无需首页
+                 识别/无需清理), 内容覆写进替身卡; 替身卡打开失败自动补真注入走老路."""
         import shutil
         if not os.path.exists(CALIB_FILE):
             log('没有 calib.json, 先 calibrate'); return False
@@ -1655,12 +1660,13 @@ class Driver:
                 draft_name = 'rd%d' % int(time.time() * 1000)  # 纯英文数字, 唯一
         if search_term is None:
             search_term = draft_name
+        inj_root = scratch_root or DRAFT_ROOT
         if not pre:
-            if not inject_draft(src_draft_dir, draft_name):
+            if not inject_draft(src_draft_dir, draft_name, dest_root=inj_root):
                 log('中止: 草稿素材缺失, 导出必被剪映拒绝 (原因见上方 ABORT 行)')
                 self.injected_name = draft_name  # finally 杀完剪映后统一清理
                 return False
-            time.sleep(2)  # 等剪映实时识别
+            time.sleep(2)  # 等剪映实时识别 (scratch 模式仅为素材回填落盘)
         self.injected_name = draft_name  # finally 杀完剪映后统一清理 (预注入的同样要清)
         emit_progress('inject', 10)
 
@@ -1675,10 +1681,18 @@ class Driver:
         # 替身卡打开失败自动回退点任务卡片.
         if DESKTOP_MODE:
             card_names = [draft_name]
+            task_dir = os.path.join(inj_root, draft_name)
             if api_mode and SWAP_MODE:
-                stand_in = self._prepare_stand_in(draft_name)
+                stand_in = self._prepare_stand_in(task_dir)
                 if stand_in:
                     card_names = [stand_in, draft_name]  # 替身卡优先, 任务卡兜底
+                elif scratch_root:
+                    # scratch 注入的替身失败 → 补一次真注入进草稿根, 让任务卡兜底可见
+                    if not inject_draft(src_draft_dir, draft_name):
+                        log('中止: 替身卡失败 + 真注入素材缺失')
+                        self.injected_name = draft_name; return False
+                    task_dir = os.path.join(DRAFT_ROOT, draft_name)
+                    time.sleep(2)
             opened = False
             for card_name in card_names:
                 for card_attempt in range(8):
@@ -1846,6 +1860,103 @@ def main():
         except KeyboardInterrupt:
             pass
         finally:
+            wd_session(False)
+        sys.exit(0)
+
+    if mode == 'worker':
+        # P4 常驻会话 worker: stdin 收 JSON 任务行, 剪映只启动一次跨任务复用.
+        # 协议: {"op":"render","draft_dir":...,"draft_name":...,"api_out":...}
+        #       {"op":"quit"} / stdin EOF
+        # 应答: stdout 行 'WORKER_RESULT {json}'; 期间照常输出 [PROGRESS] 行.
+        desk = JY_DESKTOP
+        for i, a in enumerate(sys.argv):
+            if a == '--desktop-name' and i + 1 < len(sys.argv):
+                desk = sys.argv[i + 1]
+        scratch_root = os.path.join(SCRIPT_DIR, 'scratch_drafts')
+        os.makedirs(scratch_root, exist_ok=True)
+        global DESKTOP_MODE, CURRENT_HDESK
+        DESKTOP_MODE = True
+        d = Driver()
+        alive = False
+        jy_pid = None
+
+        def _ensure_session():
+            nonlocal alive, jy_pid
+            if alive and find_main_pid():
+                return True
+            log('P4 worker: (重新)拉起剪映...')
+            try: d.stop_monitor(); d.detach()
+            except Exception: pass
+            kill_jianying()
+            _sweep_zombie_drafts()
+            pid, hDesk = start_jianying_in_desktop(desk)
+            CURRENT_HDESK = hDesk
+            if not pid:
+                print('WORKER_RESULT ' + json.dumps(
+                    {'ok': False, 'error': 'jianying start failed'}), flush=True)
+                return False
+            jy_pid = pid
+            log('P4 worker: 剪映已启动 PID=%d, 等首页 30s...' % pid)
+            time.sleep(30)
+            if not d.attach(pid=pid):
+                print('WORKER_RESULT ' + json.dumps(
+                    {'ok': False, 'error': 'attach failed'}), flush=True)
+                return False
+            d.start_monitor()
+            alive = True
+            return True
+
+        try:
+            for line in sys.stdin:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    task = json.loads(line)
+                except Exception as e:
+                    print('WORKER_RESULT ' + json.dumps(
+                        {'ok': False, 'error': 'bad task json: %r' % e}), flush=True)
+                    continue
+                op = task.get('op')
+                if op == 'quit':
+                    break
+                if op != 'render':
+                    print('WORKER_RESULT ' + json.dumps(
+                        {'ok': False, 'error': 'unknown op %r' % op}), flush=True)
+                    continue
+                if not _ensure_session():
+                    continue
+                draft_dir = task.get('draft_dir') or ''
+                draft_name = task.get('draft_name') or ('rd%d' % int(time.time() * 1000))
+                api_out = task.get('api_out')
+                try:
+                    ok = d.render_draft(draft_dir, draft_name=draft_name,
+                                        api_out=api_out, scratch_root=scratch_root)
+                    mp4 = api_out or os.path.join(
+                        config.VIDEOS_DIR, (draft_name or '') + '.mp4')
+                    print('WORKER_RESULT ' + json.dumps(
+                        {'ok': bool(ok), 'draft': draft_name,
+                         'mp4': mp4 if ok else None, 'desktop': desk},
+                        ensure_ascii=False), flush=True)
+                except Exception as e:
+                    print('WORKER_RESULT ' + json.dumps(
+                        {'ok': False, 'error': repr(e)}), flush=True)
+                # scratch 任务文件夹清理 (引擎句柄已随编辑器关闭释放; 失败留给下次)
+                try:
+                    import shutil as _sh
+                    _sh.rmtree(os.path.join(scratch_root, draft_name),
+                               ignore_errors=True)
+                except Exception:
+                    pass
+                # 回退路径可能在草稿根留了真注入 — 清掉 (轻量重试, 失败留给下次 sweep)
+                if os.path.isdir(os.path.join(DRAFT_ROOT, draft_name)):
+                    _cleanup_injected_draft(draft_name)
+        finally:
+            try:
+                d.stop_monitor(); d.detach()
+            except Exception:
+                pass
+            kill_jianying()
             wd_session(False)
         sys.exit(0)
 
