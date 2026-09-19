@@ -97,7 +97,10 @@ class TraceCollector:
                 p.get('bytes'), p.get('ret')))
         elif t == 'event':
             self.events.append(p)
-            log('event: %s sid=%s' % (p['api'], p.get('sid')))
+            extra = (' path=%s' % p['path']) if p.get('path') else ''
+            log('event: %s%s' % (p['api'], extra))
+            if p.get('stack'):
+                log('  栈: %s' % ' <- '.join(p['stack'][:10]))
 
     def finalize(self):
         strings_report = []

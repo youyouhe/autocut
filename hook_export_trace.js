@@ -195,6 +195,45 @@ function installHooks() {
         });
     }
 
+    // === CreateFileW  chokepoint ===
+    // 真实渲染入口在更深的 RPC 分发层 (ExportClient::exportStart 与
+    // NewVEWrapper::export_start 都只在面板开/收尾触发). 但导出必然创建
+    // .__jianying_export_temp_folder__ 下的临时文件 — 按路径过滤 CreateFileW
+    // + 回溯调用栈, 直接定位真正启动导出的函数, 与调用层数无关.
+    try {
+        var createFileW = Module.getExportByName('kernelbase.dll', 'CreateFileW');
+        Interceptor.attach(createFileW, {
+            onEnter: function (args) {
+                try {
+                    var path = args[0].readUtf16String();
+                    if (path && path.indexOf('jianying_export_temp_folder') >= 0) {
+                        send({ t: 'event', api: 'CreateFileW', path: path,
+                               stack: backtrace(this.context).slice(0, 14) });
+                    }
+                } catch (e) { /* 路径读不出, 忽略 */ }
+            }
+        });
+    } catch (e) {
+        send({ t: 'event', api: 'createfilew-hook-failed', path: '' + e });
+    }
+
+    // === 其余导出家族 log-only (不带 dump, 摸清确认点击时的完整调用序列) ===
+    var logOnly = [
+        ['?exportAudioStart@ExportClient@@', 'exportAudioStart'],
+        ['?endComposeCoverCmd@CoverClient@@', 'endComposeCover'],
+        ['?GetLastExportInfo@Muxer@lvve@@', 'getLastExportInfo'],
+        ['?cancelExportSegment@SingleSegmentPlayClient@@', 'cancelExportSegment'],
+    ];
+    logOnly.forEach(function (w) {
+        var addr = found[w[1]];
+        if (!addr) return;
+        Interceptor.attach(addr, {
+            onEnter: function () {
+                send({ t: 'event', api: w[1], stack: backtrace(this.context).slice(0, 6) });
+            }
+        });
+    });
+
     HOOKED = true;
     send({ t: 'ready' });
     return true;
