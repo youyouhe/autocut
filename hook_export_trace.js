@@ -35,10 +35,11 @@ function backtrace(ctx) {
 }
 
 // 逐页安全读: 碰到未映射页就停 (堆块尾部多半邻接未分配区).
-// 每读一页立刻 send, 不在 JS 里攒大 buffer.
-function streamDump(id, base) {
+// 每读一页立刻 send, 不在 JS 里攒大 buffer. cap 限制总量 (栈上引用可达数 MB).
+function streamDump(id, base, cap) {
+    cap = cap || DUMP_CAP;
     var total = 0;
-    for (var off = 0; off < DUMP_CAP; off += PAGE) {
+    for (var off = 0; off < cap; off += PAGE) {
         var buf;
         try {
             buf = base.add(off).readByteArray(PAGE);
@@ -62,6 +63,9 @@ function installHooks() {
         ['?exportCancel@ExportClient@@', 'exportCancel'],
         ['?exportCompositionToFileSync2@ExportClient@@', 'exportCompFileSync2'],
         ['?exportCompositionToFileSync@ExportClient@@', 'exportCompFileSync'],
+        ['?exportAudioStart@ExportClient@@', 'exportAudioStart'],
+        ['?export_start@NewVEWrapper@lvve@@', 'newVE_export_start'],
+        ['?export_cancel@NewVEWrapper@lvve@@', 'newVE_export_cancel'],
         ['?closeSession@Server@lyra@@QEAAXJ@Z', 'closeSession'],
     ];
     var found = {};
@@ -79,6 +83,74 @@ function installHooks() {
                           .filter(function (n) { return !found[n]; }) });
 
     var seq = 0;
+
+    // 读 MSVC std::string (16字节 buf/ptr + size@16 + cap@24); cap>15 时 buf 是堆指针.
+    // 只在 dump 内存范围内跟指针, 防野指针.
+    function readStdString(sp, dumpBase, dumpLen) {
+        var size, cap, out = { size: -1, s: '' };
+        try {
+            size = sp.add(16).readU64().toNumber();
+            cap = sp.add(24).readU64().toNumber();
+        } catch (e) { return out; }
+        if (cap === 15 && size <= 15) {
+            out.size = size;
+            out.s = sp.readUtf8String(size);
+            return out;
+        }
+        if (cap > 15 && size <= cap && size < 1048576) {
+            var p = sp.readPointer();
+            if (dumpBase && !(p.compare(dumpBase) >= 0 && p.compare(dumpBase.add(dumpLen)) < 0)) {
+                out.s = '(ptr-out-of-dump 0x' + p.toString(16) + ')';
+                out.size = size;
+                return out;
+            }
+            try { out.s = p.readUtf8String(Math.min(size, 4096)); out.size = size; } catch (e) {}
+        }
+        return out;
+    }
+
+    // NewVEWrapper::export_start(this, const string& out, const ExportConfig&,
+    //                            fn progress, fn done, string extra)
+    // ExportConfig 是明文参数结构体 — P2 直调的核心目标, 全量 dump.
+    if (found.newVE_export_start) {
+        Interceptor.attach(found.newVE_export_start, {
+            onEnter: function (args) {
+                var id = ++seq;
+                var meta = { t: 'end', id: id, api: 'newVE_export_start',
+                             tid: Process.getCurrentThreadId(),
+                             ret: modOff(this.returnAddress),
+                             stack: backtrace(this.context).slice(0, 8) };
+                try { meta.thisPtr = args[0].toString(); } catch (e) {}
+                // dump ExportConfig (args[2]) 上限 64KB (引用可能指向栈, 防拉满栈)
+                try {
+                    var cfg = args[2];
+                    meta.cfgPtr = cfg.toString();
+                    meta.cfgBytes = streamDump(id, cfg, 64 * 1024);
+                } catch (e) { meta.cfgBytes = 0; }
+                // 读输出路径字符串 (args[1]) — 不在 cfg dump 范围, 直接读
+                try {
+                    meta.outArg = readStdString(args[1], ptr('0'), 0).s;
+                } catch (e) { meta.outArg = '(err ' + e + ')'; }
+                // 顺带 dump this 对象头部 64KB (NewVEWrapper 内含引擎状态, 供 P2 参考)
+                try {
+                    var id2 = ++seq;
+                    streamDump(id2, args[0], 64 * 1024);
+                    meta.thisDumpId = id2;
+                } catch (e) {}
+                try { meta.extraArg = readStdString(args[5], ptr('0'), 0).s; } catch (e) {}
+                send(meta);
+            }
+        });
+    }
+    if (found.newVE_export_cancel) {
+        Interceptor.attach(found.newVE_export_cancel, {
+            onEnter: function (args) {
+                send({ t: 'event', api: 'newVE_export_cancel',
+                       thisPtr: args[0].toString(),
+                       stack: backtrace(this.context).slice(0, 6) });
+            }
+        });
+    }
 
     // 导出请求族: 统一 dump. exportStart 是主目标; cancel/composition 兜底观察
     // 5.9 是否走旧 API (真导出触发时若两路都响, 对比即可分辨实际链路).
