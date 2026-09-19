@@ -94,3 +94,16 @@ BrowserSkill/
 
 # 会话/运行时数据库 (含用户对话内容, 不入库)
 agent_sessions.db*
+
+# 剪映闭源二进制 (本地逆向分析用, 禁止入库)
+VECreator.dll
+videoeditor.dll
+VETextTemplateCreator.dll
+renderkit_windows.dll
+VESafeGuard.dll
+VEConfig.dll
+VEExceptMonitor.dll
+*.dll
+
+# P1 逆向侦察产出 (渲染节点拉回的内存 dump)
+re_probe_out/

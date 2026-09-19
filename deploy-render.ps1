@@ -23,7 +23,10 @@ $files = @(
     'render_monitor.py',
     'upgrade_watchdog.py',
     'config.py',
-    'task_store.py'
+    'task_store.py',
+    'hook_focus.js',
+    'hook_export_trace.js',
+    're_probe_p1.py'
 )
 
 foreach ($f in $files) {
