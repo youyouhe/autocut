@@ -201,7 +201,16 @@ function installHooks() {
     // .__jianying_export_temp_folder__ 下的临时文件 — 按路径过滤 CreateFileW
     // + 回溯调用栈, 直接定位真正启动导出的函数, 与调用层数无关.
     try {
-        var createFileW = Module.getExportByName('kernelbase.dll', 'CreateFileW');
+        // Frida 17 移除了 Module.getExportByName(module, name) 静态方法, 双写法兜底
+        var createFileW = null;
+        try { createFileW = Module.getGlobalExportByName('CreateFileW'); } catch (e1) {}
+        if (!createFileW) {
+            try {
+                var kb = Process.findModuleByName('kernelbase.dll');
+                if (kb) createFileW = kb.getExportByName('CreateFileW');
+            } catch (e2) {}
+        }
+        if (!createFileW) throw new Error('CreateFileW 未找到');
         Interceptor.attach(createFileW, {
             onEnter: function (args) {
                 try {
