@@ -601,9 +601,17 @@ rpc.exports = {
             if (rootW <= 0 || rootH <= 0) continue;   // 跳过隐藏/未布局窗口
             cands.push({ win: wins[i], area: rootW * rootH });
         }
-        cands.sort(function (a, b) { return b.area - a.area; });   // 最大窗口 = 编辑器
+        cands.sort(function (a, b) { return b.area - a.area; });   // 面积降序
         if (!cands.length) return { ok: false, err: 'no visible top window' };
-        var win = cands[0].win;
+        // 选窗口: 首页窗口可能比编辑器大, "最大窗口"不可靠. 编辑器的可靠特征 =
+        // 包含工具栏"导出"按钮 (编辑器独有). 锚定它, 兜底才用最大窗口.
+        var win = null;
+        for (var i = 0; i < cands.length; i++) {
+            var hit = null;
+            try { hit = qiFindButtonByText(cands[i].win, ['导出']); } catch (e) {}
+            if (hit) { win = cands[i].win; break; }
+        }
+        if (!win) win = cands[0].win;
         var best = null;
         var count = 0;
         function walk2(item, depth, ax, ay, ancestorBtn) {
