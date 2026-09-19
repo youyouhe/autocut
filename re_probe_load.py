@@ -107,6 +107,20 @@ def main():
                             log('符号命中=%s 缺失=%s' % (p['found'], p['missing']))
                         elif t == 'ready':
                             log('装载链 hook 就位 (PID 分支)')
+                        elif t in ('draft', 'persistent'):
+                            seq[0] += 1
+                            jsonl.write(json.dumps(p, ensure_ascii=False) + '\n')
+                            jsonl.flush()
+                            log('★ %s ptr=%s (已登记追踪)' % (t, p.get('ptr')))
+                        elif t == 'hit':
+                            seq[0] += 1
+                            jsonl.write(json.dumps(p, ensure_ascii=False) + '\n')
+                            jsonl.flush()
+                            log('★★★ 命中! %s arg[%d]%s 收到指针 %s (tid=%s ret=%s)' % (
+                                p['api'], p['argIdx'],
+                                ' 解引用' if p.get('deref') else '', p['ptr'],
+                                p.get('tid'), p.get('ret')))
+                            log('    栈: %s' % ' <- '.join(p.get('stack', [])[:8]))
                         elif t in ('load', 'invoke'):
                             seq[0] += 1
                             jsonl.write(json.dumps(p, ensure_ascii=False) + '\n')
