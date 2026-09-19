@@ -1566,9 +1566,32 @@ class Driver:
         log('  ✓ api 渲染完成: %s' % api_out)
         emit_progress('confirm', 60)
         self._api_disable()  # 先关补丁再关编辑器 (close-time exportStart 会重渲染覆盖)
-        # 清导出面板: 不点确认 → 无完成弹窗. ESC 两拍, 若出现"放弃导出?"确认则点掉.
-        press_escape(); time.sleep(1.2)
-        press_escape(); time.sleep(1.0)
+        # 关导出面板. 注意: ESC 打不中 — 弹窗从未被激活时 focusWindow=null (已知坑),
+        # P4 首跑实锤 ESC 后面板仍开着 → 主窗标题栏按钮禁用 → 编辑器关不掉.
+        # 走弹窗按钮可靠通道: 按文字点"取消/关闭" (与 confirm 同款机制).
+        closed = False
+        for texts in (['取消', '关闭'], ['关闭']):
+            try:
+                if self.script.exports_sync.findmodalbutton(
+                        json.dumps(texts, ensure_ascii=False)).get('ok'):
+                    log('  关导出面板: 点弹窗按钮 %s' % texts)
+                    self.click_modal_button(texts,
+                                            caps['confirm']['lx'], caps['confirm']['ly'])
+                    closed = True
+                    break
+            except Exception:
+                continue
+        if not closed:
+            # 兜底: 激活弹窗再 ESC
+            try:
+                mh = self.script.exports_sync.modalhwnd()
+                if mh and mh.get('ok') and mh.get('hwnd'):
+                    _activate_hwnd(int(mh.get('hwnd'), 16))
+            except Exception:
+                pass
+            press_escape()
+        time.sleep(1.5)
+        # 取消后可能弹"确认放弃?" — 点掉
         try:
             mb = self.script.exports_sync.findmodalbutton(
                 json.dumps(['确定', '放弃', '是'], ensure_ascii=False))
