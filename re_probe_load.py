@@ -92,7 +92,7 @@ def main():
                 try:
                     log('发现剪映进程 PID=%d, 立即 attach 挂装载链 trace...' % pid)
                     s = frida.get_local_device().attach(pid)
-                    script = s.create_script(open(TRACE_JS, encoding='utf-8').read())
+                    script = s.create_script(open(args.js, encoding='utf-8').read())
 
                     def on_msg(message, data):
                         if message['type'] == 'error':
@@ -111,7 +111,8 @@ def main():
                             seq[0] += 1
                             jsonl.write(json.dumps(p, ensure_ascii=False) + '\n')
                             jsonl.flush()
-                            log('#%d %s (tid=%s ret=%s)' % (seq[0], p['api'],
+                            label = p.get('api') or ('invoke svc=%r api=%r' % (p.get('svc'), p.get('api')))
+                            log('#%d %s (tid=%s ret=%s)' % (seq[0], label,
                                                             p.get('tid'), p.get('ret')))
                             for k in ('str1', 'str2', 'deref1'):
                                 if p.get(k):
