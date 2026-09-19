@@ -1845,10 +1845,13 @@ class Driver:
                 log('  ✓ 编辑器已关闭 (导出按钮消失)')
                 break
             log('  ⚠ 编辑器未关闭, 重试')
-            # 诊断: dump 前台窗口顶条节点 (找真正的返回按钮)
+            # 诊断: dump 编辑器窗口顶条节点 (找真正的返回按钮).
+            # win 从 findmainbutton 结果拿 (curWin 在未激活窗口下是 null 的已知坑).
             try:
-                st = self.script.exports_sync.status()
-                win = st.get('curWin')
+                mb = self.script.exports_sync.findmainbutton(
+                    json.dumps(['导出'], ensure_ascii=False))
+                win = mb.get('win')
+                log('诊断: 编辑器 win=%s' % win)
                 if win:
                     nodes = self.script.exports_sync.dumptree(win, 14, 800)
                     strip = [n for n in nodes if isinstance(n.get('ay'), (int, float))
