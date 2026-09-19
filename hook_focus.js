@@ -585,6 +585,60 @@ rpc.exports = {
         }
         return { ok: false, err: 'button not found in any top-level window (scanned ' + cands.length + ')' };
     },
+    // 几何定位: 最大可见顶层窗口顶条 (ay<=60) 里最右的可点击节点 (MouseArea/LVButton).
+    // 用于编辑器"关闭/返回首页"按钮 — 该按钮是纯图标无文字, qiFindButtonByText 找不到.
+    // 坐标相对窗口 (ax/ay 同 findmainbutton 坐标系), 窗口位置/尺寸变化不影响.
+    findtopright: function () {
+        var wins;
+        try { wins = qiGetTopLevelWindows(); } catch (e) { return { ok: false, err: 'topLevelWindows: ' + e }; }
+        var cands = [];
+        for (var i = 0; i < wins.length; i++) {
+            var rootW = -1, rootH = -1;
+            try {
+                var rt = fnContentItem(wins[i]);
+                if (rt && !rt.isNull()) { rootW = fnItemW(rt); rootH = fnItemH(rt); }
+            } catch (e) { continue; }
+            if (rootW <= 0 || rootH <= 0) continue;   // 跳过隐藏/未布局窗口
+            cands.push({ win: wins[i], area: rootW * rootH });
+        }
+        cands.sort(function (a, b) { return b.area - a.area; });   // 最大窗口 = 编辑器
+        if (!cands.length) return { ok: false, err: 'no visible top window' };
+        var win = cands[0].win;
+        var best = null;
+        var count = 0;
+        function walk2(item, depth, ax, ay, ancestorBtn) {
+            if (count >= 6000 || depth > 25) return;
+            if (!item || item.isNull()) return;
+            count++;
+            var cls = null, x = 0, y = 0, w = 0, h = 0, vis = false;
+            try {
+                cls = qiGetClassName(item);
+                x = fnItemX(item); y = fnItemY(item); w = fnItemW(item); h = fnItemH(item);
+                vis = fnItemVis(item);
+            } catch (e) { return; }
+            var nax = ax + x, nay = ay + y;
+            var isClickable = (cls === 'QQuickMouseArea' || cls.indexOf('LVButton') === 0);
+            var thisBtn = ancestorBtn;
+            if (w > 4 && h > 4 && w <= 120 && h <= 80) {
+                if (isClickable || !ancestorBtn) thisBtn = { ax: nax, ay: nay, w: w, h: h, cls: cls };
+            }
+            if (isClickable && thisBtn && thisBtn.ay <= 60) {
+                if (!best || (thisBtn.ax + thisBtn.w) > (best.ax + best.w)) best = thisBtn;
+            }
+            if (!vis) return;
+            var kids;
+            try { kids = qiGetChildItems(item); } catch (e) { return; }
+            for (var i = 0; i < kids.length && count < 6000; i++) {
+                walk2(kids[i], depth + 1, nax, nay, thisBtn);
+            }
+        }
+        try { walk2(fnContentItem(win), 0, 0, 0, null); } catch (e) { return { ok: false, err: 'walk: ' + e }; }
+        if (!best) return { ok: false, err: 'no top-strip clickable in largest window' };
+        var hwnd = null;
+        try { if (fnWinId) hwnd = fnWinId(win).toString(); } catch (e) {}
+        return { ok: true, hwnd: hwnd, ax: best.ax, ay: best.ay, w: best.w, h: best.h, cls: best.cls };
+    },
+
     // hook 内 PostMessage WM_CHAR (桌面模式用, 同进程同桌面有效)
     typewm: function (text) {
         try {

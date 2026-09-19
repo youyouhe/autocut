@@ -1070,6 +1070,36 @@ class Driver:
         log('  回退到固定坐标 local(%.0f,%.0f) (frida click)' % (fallback_lx, fallback_ly))
         return self.click_global2(fallback_lx, fallback_ly)
 
+    def close_editor(self, caps):
+        """关闭编辑器回首页. P3.5: 几何定位 — 最大可见窗口(编辑器)顶条最右可点击节点
+        (关闭按钮, 纯图标无文字, qiFindButtonByText 找不到), 坐标相对窗口, 不依赖
+        calib 固定坐标; 未命中回退旧坐标."""
+        btn = None
+        try:
+            btn = self.script.exports_sync.findtopright()
+        except Exception as e:
+            log('  findtopright 异常: %r' % e)
+        if btn and btn.get('ok') and btn.get('hwnd'):
+            hwnd = int(btn['hwnd'], 16)
+            try:
+                _activate_hwnd(hwnd)
+                # 激活吞噬防护 (同 click_main_button): 先丢一次无害标题栏点击
+                _post_click_hwnd(hwnd, 600, 15)
+                time.sleep(0.3)
+            except Exception:
+                pass
+            lx, ly = btn['ax'] + btn['w'] / 2, btn['ay'] + btn['h'] / 2
+            r = _post_click_hwnd(hwnd, lx, ly)
+            log('  close_editor: findtopright btn=%s post click(local=%.0f,%.0f)=%s' %
+                ({k: btn.get(k) for k in ('cls', 'ax', 'ay', 'w', 'h')}, lx, ly, r))
+            return True
+        log('  findtopright 未命中 (%s), 回退 calib close_editor 坐标' %
+            (btn or {}).get('err', 'no result'))
+        if 'close_editor' in caps:
+            self.click_global2(caps['close_editor']['lx'], caps['close_editor']['ly'])
+            return True
+        return False
+
     def click_modal(self, lx, ly):
         """confirm/close_done 在弹窗(modal)上, 用真实 OS 级点击 (_real_click_global):
         先问 hook 弹窗当前原点(modalorigin, 只读不点), 再用真实坐标做 SetCursorPos+mouse_event.
@@ -1440,9 +1470,8 @@ class Driver:
             if 'close_done' in caps:
                 log('点关闭完成提示(modal)'); self.click_modal_button(['完成', '关闭', '确定'], caps['close_done']['lx'], caps['close_done']['ly'])
                 time.sleep(1)
-            if 'close_editor' in caps:
-                log('点关闭编辑器(回首页)'); self.click_global2(caps['close_editor']['lx'], caps['close_editor']['ly'])
-                time.sleep(2)
+            log('点关闭编辑器(回首页)'); self.close_editor(caps)
+            time.sleep(2)
         log('ALL DONE')
         return True
 
@@ -1736,9 +1765,8 @@ class Driver:
             time.sleep(1)
             log('点关闭完成提示(modal)'); self.click_modal_button(['完成', '关闭', '确定'], caps['close_done']['lx'], caps['close_done']['ly'])
             time.sleep(1.5)
-        if ok and 'close_editor' in caps:
-            log('点关闭编辑器(回首页)'); self.click_global2(caps['close_editor']['lx'], caps['close_editor']['ly'])
-            time.sleep(2)
+        log('点关闭编辑器(回首页)'); self.close_editor(caps)
+        time.sleep(2)
 
         # 5. 注入草稿的清理不在此时做 — 剪映还开着, 编辑器句柄会让 rmtree 静默半失败
         #    (留空壳文件夹, 实测 2 天积 14 个). 登记给 main() 的 finally, 杀完剪映再删.
