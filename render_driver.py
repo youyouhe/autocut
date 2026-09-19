@@ -1853,10 +1853,11 @@ class Driver:
                 win = mb.get('win')
                 log('诊断: 编辑器 win=%s' % win)
                 if win:
-                    nodes = self.script.exports_sync.dumptree(win, 14, 800)
-                    strip = [n for n in nodes if isinstance(n.get('ay'), (int, float))
-                             and n.get('ay', 999) <= 60 and n.get('w', 0) > 2]
-                    strip.sort(key=lambda n: (n.get('ay', 0), n.get('ax', 0)))
+                    res = self.script.exports_sync.dumptree(win, 14, 800)
+                    nodes = res.get('nodes') or []
+                    strip = [n for n in nodes if isinstance(n.get('y'), (int, float))
+                             and n.get('y', 999) <= 60 and n.get('w', 0) > 2]
+                    strip.sort(key=lambda n: (n.get('y', 0), n.get('x', 0)))
                     log('顶条节点(%d): %s' % (len(strip), json.dumps(
                         strip[:40], ensure_ascii=False)))
             except Exception as e:
